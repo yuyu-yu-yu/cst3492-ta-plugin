@@ -1,0 +1,14 @@
+<idea-plugin>
+    <id>edu.tongji.cst3492.ta</id>
+    <name>CST3492 Course TA Assistant</name>
+    <vendor email="cst3492@tongji.edu.cn" url="https://sse.tongji.edu.cn">Tongji University CST3492 Team</vendor>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.java</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+    </extensions>
+
+    <actions>
+    </actions>
+</idea-plugin>
