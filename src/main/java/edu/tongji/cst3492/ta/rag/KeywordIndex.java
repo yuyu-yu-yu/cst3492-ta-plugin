@@ -50,7 +50,7 @@ public final class KeywordIndex {
             Set<String> headingTokens = new HashSet<>(TextTokenizer.tokenize(chunk.sectionTitle()));
             headingTokensPerChunk.add(headingTokens);
 
-            String fullText = chunk.sectionTitle() + " " + chunk.content();
+            String fullText = chunk.sectionTitle() + " " + chunk.sectionTitle() + " " + chunk.content();
             List<String> tokens = TextTokenizer.tokenize(fullText);
             docLengths[docIdx] = tokens.size();
             totalTokens += tokens.size();
