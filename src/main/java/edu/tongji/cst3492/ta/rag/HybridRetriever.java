@@ -43,7 +43,9 @@ public final class HybridRetriever {
         List<ScoredChunk> vectorRanking = vectorIndex.search(query, window);
 
         // If neither keyword nor semantic search found a meaningful match, return empty so TA states general knowledge
-        if (keywordRanking.isEmpty() && (vectorRanking.isEmpty() || vectorRanking.get(0).vectorScore() < 0.35)) {
+        boolean hasStrongKeyword = !keywordRanking.isEmpty() && keywordRanking.get(0).keywordScore() >= 2.2;
+        boolean hasStrongVector = !vectorRanking.isEmpty() && vectorRanking.get(0).vectorScore() >= 0.50;
+        if (!hasStrongKeyword && !hasStrongVector) {
             return List.of();
         }
 
@@ -74,8 +76,8 @@ public final class HybridRetriever {
             double rrfScore = entry.getValue();
             double kw = kwScores.getOrDefault(id, 0.0);
             double vec = vecScores.getOrDefault(id, 0.0);
-            // Require either a non-trivial keyword match or strong vector similarity
-            if (rrfScore >= minRelevanceScore && (kw >= 0.8 || vec >= 0.35)) {
+            // Require either a meaningful BM25 keyword match or strong semantic vector similarity
+            if (rrfScore >= minRelevanceScore && (kw >= 2.2 || (kw >= 1.2 && vec >= 0.38) || vec >= 0.50)) {
                 merged.add(new ScoredChunk(byId.get(id), rrfScore, kw, vec));
             }
         }
