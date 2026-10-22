@@ -26,6 +26,9 @@ import javax.swing.JComponent;
  */
 public final class AskTaAboutSelectionAction extends AnAction {
 
+    private static final String BUSY_MESSAGE =
+            "CST3492 TA is currently answering a previous question. Please wait or start a New Session.";
+
     @Override
     public @NotNull ActionUpdateThread getActionUpdateThread() {
         return ActionUpdateThread.BGT;
@@ -53,6 +56,12 @@ public final class AskTaAboutSelectionAction extends AnAction {
             return;
         }
 
+        TaToolWindowPanel openPanel = findPanel(project);
+        if (openPanel != null && openPanel.isRequestInFlight()) {
+            Messages.showInfoMessage(project, BUSY_MESSAGE, PluginConstants.PLUGIN_NAME);
+            return;
+        }
+
         String userQuestion = Messages.showInputDialog(
                 project,
                 "Selected Context: " + context.formatSummary() + "\n\nEnter your question for the CST3492 Course TA:",
@@ -76,6 +85,10 @@ public final class AskTaAboutSelectionAction extends AnAction {
                 if (content != null) {
                     JComponent component = content.getComponent();
                     if (component instanceof TaToolWindowPanel panel) {
+                        if (panel.isRequestInFlight()) {
+                            Messages.showInfoMessage(project, BUSY_MESSAGE, PluginConstants.PLUGIN_NAME);
+                            return;
+                        }
                         panel.prefillQuestionWithContext(context, userQuestion);
                         return;
                     }
@@ -85,5 +98,18 @@ public final class AskTaAboutSelectionAction extends AnAction {
         } else {
             TaProjectService.getInstance(project).setPendingCodeContext(context);
         }
+    }
+
+    private static TaToolWindowPanel findPanel(Project project) {
+        ToolWindow toolWindow = ToolWindowManager.getInstance(project)
+                .getToolWindow(TaToolWindowFactory.TOOL_WINDOW_ID);
+        if (toolWindow == null) {
+            return null;
+        }
+        Content content = toolWindow.getContentManager().getContent(0);
+        if (content != null && content.getComponent() instanceof TaToolWindowPanel panel) {
+            return panel;
+        }
+        return null;
     }
 }
