@@ -60,4 +60,22 @@ class CourseDocumentParserTest {
         assertTrue(tokens.contains("retriever"));
         assertTrue(tokens.contains("bm25"));
     }
+
+    @Test
+    void generatesDistinctChunkIdsAcrossDocumentsWithLongOrNonAsciiNames() {
+        CourseDocumentParser parser = new CourseDocumentParser();
+        List<KnowledgeChunk> doc1 = parser.parsePlainTextDocument(
+                "Java-Enterprise-Lecture-Part1.md",
+                "# Topic A\nReciprocal Rank Fusion combines BM25 and vector rankings."
+        );
+        List<KnowledgeChunk> doc2 = parser.parsePlainTextDocument(
+                "Java-Enterprise-Lecture-Part2.md",
+                "# Topic B\nToolDispatcher checks tool calls before running Java methods."
+        );
+        List<KnowledgeChunk> cn1 = parser.parsePlainTextDocument("第一讲.pdf.txt", "# 第一讲\nJava 基础");
+        List<KnowledgeChunk> cn2 = parser.parsePlainTextDocument("第二讲.pdf.txt", "# 第二讲\nRAG 架构");
+
+        assertNotEquals(doc1.get(0).id(), doc2.get(0).id(), "Long similar filenames must produce distinct chunk IDs");
+        assertNotEquals(cn1.get(0).id(), cn2.get(0).id(), "Non-ASCII filenames must produce distinct chunk IDs");
+    }
 }

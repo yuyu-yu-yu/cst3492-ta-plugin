@@ -51,20 +51,27 @@ public final class CourseKnowledgeBase {
             return 0;
         }
         int loadedDocs = 0;
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(directory, "*.{pdf,md,txt}")) {
+        loadedDocs += scanMatchingLectureFiles(directory, "Lec-*.{pdf,md,txt}");
+        Path coursesSubdir = directory.resolve("course-materials");
+        if (Files.isDirectory(coursesSubdir)) {
+            loadedDocs += scanMatchingLectureFiles(coursesSubdir, "*.{pdf,md,txt}");
+        }
+        return loadedDocs;
+    }
+
+    private int scanMatchingLectureFiles(Path dir, String globPattern) {
+        int count = 0;
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, globPattern)) {
             for (Path file : stream) {
                 String name = file.getFileName().toString();
-                if (name.contains("Assignment") && name.contains("Schedule")) {
-                    continue;
-                }
                 if (!documentChunkCounts.containsKey(name)) {
                     indexFile(file);
-                    loadedDocs++;
+                    count++;
                 }
             }
         } catch (IOException ignored) {
         }
-        return loadedDocs;
+        return count;
     }
 
     public synchronized List<KnowledgeChunk> indexFile(Path file) throws IOException {
