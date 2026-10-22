@@ -7,8 +7,23 @@
     <depends>com.intellij.java</depends>
 
     <extensions defaultExtensionNs="com.intellij">
+        <toolWindow
+                id="CST3492 TA"
+                secondary="false"
+                icon="/icons/taToolWindow.svg"
+                anchor="right"
+                factoryClass="edu.tongji.cst3492.ta.ui.TaToolWindowFactory"/>
     </extensions>
 
     <actions>
+        <action
+                id="edu.tongji.cst3492.ta.actions.AskTaAboutSelectionAction"
+                class="edu.tongji.cst3492.ta.actions.AskTaAboutSelectionAction"
+                text="Ask CST3492 TA About Selected Code..."
+                description="Send selected Java code context to the CST3492 Course TA chatbot with RAG slide lookup"
+                icon="/icons/taToolWindow.svg">
+            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt T"/>
+        </action>
     </actions>
 </idea-plugin>
