@@ -81,3 +81,8 @@ intellijPlatform {
 tasks.test {
     useJUnitPlatform()
 }
+
+tasks.named<org.jetbrains.intellij.platform.gradle.tasks.RunIdeTask>("runIde") {
+    args(projectDir.absolutePath)
+    jvmArgs("-Dide.trust.all.projects=true", "-Dide.show.tips.on.startup.default.value=false")
+}

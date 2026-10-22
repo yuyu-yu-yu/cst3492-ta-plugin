@@ -25,12 +25,12 @@ import java.util.stream.Collectors;
 public final class CitationVerifier {
 
     private static final Pattern CHUNK_ID_PATTERN = Pattern.compile(
-            "\\[ChunkID:\\s*([A-Za-z0-9_\\-]+)\\s*\\]",
+            "\\[ChunkID:\\s*([A-Za-z0-9_\\-]+)\\s*(?:\\|[^\\]]*)?\\]",
             Pattern.CASE_INSENSITIVE
     );
 
     private static final Pattern SOURCE_CITATION_PATTERN = Pattern.compile(
-            "\\[Source:\\s*([^,\\]]+?)\\s*,\\s*(?:Pages?|Slides?):?\\s*(\\d+)(?:\\s*[-–]\\s*(\\d+))?\\s*\\]",
+            "\\[(?:ChunkID:\\s*[A-Za-z0-9_\\-]+\\s*\\|\\s*)?Source:\\s*([^,\\]|]+?)(?:\\s*\\||\\s*,)\\s*(?:Pages?|Slides?):?\\s*(\\d+)(?:\\s*[-–]\\s*(\\d+))?\\s*(?:\\|[^\\]]*)?\\]",
             Pattern.CASE_INSENSITIVE
     );
 
@@ -235,7 +235,8 @@ public final class CitationVerifier {
     }
 
     private static String cleanInlineChunkIdTags(String reply) {
-        return reply.replaceAll("`?\\[ChunkID:\\s*[A-Za-z0-9_\\-]+\\s*\\]`?\\s*,?\\s*", "").trim();
+        String step1 = reply.replaceAll("\\[ChunkID:\\s*[A-Za-z0-9_\\-]+\\s*\\|\\s*(Source:[^\\]]+\\])", "[$1");
+        return step1.replaceAll("`?\\[ChunkID:\\s*[A-Za-z0-9_\\-]+\\s*\\]`?\\s*,?\\s*", "").trim();
     }
 
     private static String ensureFallbackNoticePresent(String reply) {

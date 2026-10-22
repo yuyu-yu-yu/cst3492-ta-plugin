@@ -46,7 +46,7 @@ public final class TaSettingsDialog extends DialogWrapper {
                 "Built-in Offline Course TA (Deterministic Demo Mode)"
         });
         this.apiBaseUrlField = new JTextField(settings.apiBaseUrl, 32);
-        this.apiKeyField = new JPasswordField(settings.getSessionApiKey(), 32);
+        this.apiKeyField = new JPasswordField(settings.resolveApiKey(), 32);
         this.modelNameField = new JTextField(settings.modelName, 24);
         this.topKSpinner = new JSpinner(new SpinnerNumberModel(
                 Math.max(1, Math.min(8, settings.topKChunks)), 1, 8, 1

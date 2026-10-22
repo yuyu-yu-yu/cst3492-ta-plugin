@@ -87,7 +87,7 @@ public final class TaToolWindowPanel extends JPanel {
         statusBannerLabel = new JLabel();
         updateKnowledgeBaseStatusLabel();
 
-        JPanel actionButtons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 4, 0));
+        JPanel actionButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         JButton importPdfBtn = new JButton("Import Slides");
         importPdfBtn.setToolTipText("Index additional course PDF slides or Markdown notes into RAG Knowledge Base");
         importPdfBtn.addActionListener(e -> importCourseMaterial());
@@ -101,20 +101,14 @@ public final class TaToolWindowPanel extends JPanel {
         });
 
         JButton clearChatBtn = new JButton("New Session");
-        clearChatBtn.addActionListener(e -> {
-            uiSessionEpoch.incrementAndGet();
-            taService.chatSession().resetSession();
-            requestInFlight.set(false);
-            setRequestControlsEnabled(true);
-            resetTranscriptWithWelcome();
-        });
+        clearChatBtn.addActionListener(e -> startNewSession());
 
         actionButtons.add(importPdfBtn);
         actionButtons.add(settingsBtn);
         actionButtons.add(clearChatBtn);
 
-        topBar.add(statusBannerLabel, BorderLayout.WEST);
-        topBar.add(actionButtons, BorderLayout.EAST);
+        topBar.add(statusBannerLabel, BorderLayout.NORTH);
+        topBar.add(actionButtons, BorderLayout.SOUTH);
         add(topBar, BorderLayout.NORTH);
 
         // 2. Center Chat Transcript (HTML rendered cards with source badges)
@@ -184,13 +178,18 @@ public final class TaToolWindowPanel extends JPanel {
             questionInput.requestFocusInWindow();
         }));
 
-        taService.setIndexUpdateListener(() -> SwingUtilities.invokeLater(this::updateKnowledgeBaseStatusLabel));
+        taService.setIndexUpdateListener(() -> SwingUtilities.invokeLater(() -> {
+            updateKnowledgeBaseStatusLabel();
+            if (taService.chatSession().history().size() <= 1) {
+                resetTranscriptWithWelcome();
+            }
+        }));
 
         resetTranscriptWithWelcome();
     }
 
     private JPanel createQuickPromptsBar() {
-        JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
+        JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 3, 2));
         bar.add(new JLabel("Quick Demo:"));
 
         ragBtn = new JButton("4 Steps of RAG");
@@ -205,7 +204,7 @@ public final class TaToolWindowPanel extends JPanel {
             submitCurrentQuestion();
         });
 
-        generalBtn = new JButton("General Knowledge Fallback");
+        generalBtn = new JButton("General Knowledge");
         generalBtn.addActionListener(e -> {
             questionInput.setText("How does Spring Boot @Autowired dependency injection work?");
             submitCurrentQuestion();
@@ -221,6 +220,14 @@ public final class TaToolWindowPanel extends JPanel {
         return requestInFlight.get();
     }
 
+    public void startNewSession() {
+        uiSessionEpoch.incrementAndGet();
+        taService.chatSession().resetSession();
+        requestInFlight.set(false);
+        setRequestControlsEnabled(true);
+        resetTranscriptWithWelcome();
+    }
+
     /** Toggles the send button and Quick Demo buttons; must be called on the EDT. */
     private void setRequestControlsEnabled(boolean enabled) {
         sendButton.setText(enabled ? "Ask TA" : "Thinking...");
@@ -231,19 +238,30 @@ public final class TaToolWindowPanel extends JPanel {
     }
 
     public void prefillQuestionWithContext(EditorCodeContext context, String suggestedQuestion) {
+        prefillQuestionWithContext(context, suggestedQuestion, null);
+    }
+
+    public void prefillQuestionWithContext(EditorCodeContext context, String suggestedQuestion, Runnable onComplete) {
         taService.setPendingCodeContext(context);
         if (suggestedQuestion != null && !suggestedQuestion.isBlank()) {
             questionInput.setText(suggestedQuestion);
-            submitCurrentQuestion();
+            submitCurrentQuestion(onComplete);
         } else {
             if (questionInput.getText().isBlank()) {
                 questionInput.setText("Please explain this selected code, check for potential issues, and relate it to CST3492 course concepts.");
             }
             questionInput.requestFocusInWindow();
+            if (onComplete != null) {
+                onComplete.run();
+            }
         }
     }
 
     private void submitCurrentQuestion() {
+        submitCurrentQuestion(null);
+    }
+
+    private void submitCurrentQuestion(Runnable onComplete) {
         String question = questionInput.getText().trim();
         if (question.isEmpty()) {
             return;
@@ -283,6 +301,9 @@ public final class TaToolWindowPanel extends JPanel {
                     requestInFlight.set(false);
                     setRequestControlsEnabled(true);
                     questionInput.requestFocusInWindow();
+                    if (onComplete != null) {
+                        onComplete.run();
+                    }
                 });
             }
         });
@@ -434,48 +455,62 @@ public final class TaToolWindowPanel extends JPanel {
         renderTranscript();
     }
 
+    private int lastUserMessageDocPos = 0;
+
     private void appendUserMessageHtml(String question, EditorCodeContext ctx) {
+        lastUserMessageDocPos = transcriptPane.getDocument().getLength();
         transcriptHtml.append("<div style='font-family:sans-serif; margin:8px; padding:8px; border-left:3px solid #28A745;'>")
                 .append("<b>You:</b><br/>");
         if (ctx != null && ctx.hasSelection()) {
             transcriptHtml.append("<div style='margin:4px 0; padding:4px; font-family:monospace; font-size:11px;'>")
                     .append("<b>[Attached Code Context: ").append(escapeHtml(ctx.formatSummary())).append("]</b><br/>")
-                    .append("<pre style='margin:2px 0;'>").append(escapeHtml(truncateCode(ctx.selectedCode(), 350))).append("</pre>")
+                    .append("<pre style='margin:2px 0;'>").append(escapeHtml(truncateCode(ctx.selectedCode(), 220))).append("</pre>")
                     .append("</div>");
         }
         transcriptHtml.append(formatMarkdownLikeHtml(question))
                 .append("</div>");
-        renderTranscript();
+        renderTranscriptAt(lastUserMessageDocPos);
     }
 
     private void appendTaResponseHtml(TaResponse response) {
-        String badgeColor = response.basedOnCourseMaterial() ? "#1E7E34" : "#B85C00";
+        int scrollPosBefore = lastUserMessageDocPos;
+        String badgeColor = response.basedOnCourseMaterial() ? "#2EA043" : "#D29922";
+        String badgeBg = response.basedOnCourseMaterial() ? "#1B3324" : "#382A14";
         String badgeTitle = response.basedOnCourseMaterial()
-                ? "Verified Course Material Citations: " + escapeHtml(response.citationSummary())
+                ? "Verified Course Material Citations:<br/><code>" + escapeHtml(response.citationSummary()) + "</code>"
                 : escapeHtml(PluginConstants.GENERAL_KNOWLEDGE_FALLBACK);
 
-        transcriptHtml.append("<div style='font-family:sans-serif; margin:8px; padding:10px; border:1px solid #888888; border-radius:6px;'>")
+        transcriptHtml.append("<div style='font-family:sans-serif; margin:8px; padding:10px; border:1px solid #555555;'>")
                 .append("<b>CST3492 TA</b> <small>(").append(escapeHtml(response.modelUsed())).append(")</small><br/>")
-                .append("<div style='margin:6px 0; padding:5px 8px; border-left:4px solid ").append(badgeColor).append(";'>")
+                .append("<div style='margin:6px 0; padding:6px 8px; background-color:").append(badgeBg)
+                .append("; border-left:4px solid ").append(badgeColor).append(";'>")
                 .append("<b>Source Verification:</b> ").append(badgeTitle)
                 .append("</div>")
                 .append("<div style='margin-top:6px;'>")
                 .append(formatMarkdownLikeHtml(response.answer()))
                 .append("</div>")
                 .append("</div>");
-        renderTranscript();
+        transcriptPane.setText("<html><body>" + transcriptHtml + "</body></html>");
+        transcriptPane.setCaretPosition(transcriptPane.getDocument().getLength());
     }
 
     private void appendErrorHtml(String message) {
-        transcriptHtml.append("<div style='font-family:sans-serif; margin:8px; padding:10px; border:1px solid #C93B2B; border-radius:6px;'>")
+        int scrollPosBefore = transcriptPane.getDocument().getLength();
+        transcriptHtml.append("<div style='font-family:sans-serif; margin:8px; padding:10px; border:1px solid #C93B2B;'>")
                 .append("<b>CST3492 TA Error:</b> ").append(escapeHtml(message))
                 .append("</div>");
-        renderTranscript();
+        renderTranscriptAt(scrollPosBefore);
     }
 
     private void renderTranscript() {
         transcriptPane.setText("<html><body>" + transcriptHtml + "</body></html>");
-        transcriptPane.setCaretPosition(transcriptPane.getDocument().getLength());
+        transcriptPane.setCaretPosition(0);
+    }
+
+    private void renderTranscriptAt(int targetPos) {
+        transcriptPane.setText("<html><body>" + transcriptHtml + "</body></html>");
+        int docLen = transcriptPane.getDocument().getLength();
+        transcriptPane.setCaretPosition(Math.max(0, Math.min(targetPos, docLen)));
     }
 
     public static String formatMarkdownLikeHtml(String text) {
