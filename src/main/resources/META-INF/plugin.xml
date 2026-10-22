@@ -22,8 +22,8 @@
                 text="Ask CST3492 TA About Selected Code..."
                 description="Send selected Java code context to the CST3492 Course TA chatbot with RAG slide lookup"
                 icon="/icons/taToolWindow.svg">
-            <add-to-group group-id="EditorPopupMenu" anchor="first"/>
-            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt T"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="after" relative-to-action="$Paste"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl alt shift A"/>
         </action>
     </actions>
 </idea-plugin>

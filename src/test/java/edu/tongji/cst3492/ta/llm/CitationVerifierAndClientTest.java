@@ -102,4 +102,62 @@ class CitationVerifierAndClientTest {
         assertTrue(verified.basedOnCourseMaterial());
         assertTrue(verified.answer().contains("Page 27"));
     }
+
+    @Test
+    void doesNotFalseMatchPage2WhenModelCitesPage23() {
+        KnowledgeChunk slide2 = new KnowledgeChunk(
+                "lec-5-p2-1",
+                "Lec-5-Building-AI-Powered-Java-Applications.pdf",
+                2,
+                2,
+                "Development AI and Runtime AI",
+                "Same discipline: the model drafts; Java and the teacher decide."
+        );
+        List<ScoredChunk> supplied = List.of(new ScoredChunk(slide2, 0.03, 3.0, 0.7));
+
+        // Model mentions Page 23, which was NOT supplied (only Page 2 was supplied)
+        TaResponse verified = CitationVerifier.verifyAndFormat(
+                "According to Lec-5-Building-AI-Powered-Java-Applications.pdf on Page 23, RAG has four steps.",
+                supplied,
+                "TestModel"
+        );
+        assertFalse(verified.basedOnCourseMaterial(), "Page 23 must not substring-match supplied Page 2");
+        assertTrue(verified.citedChunks().isEmpty());
+        assertTrue(verified.answer().contains(PluginConstants.GENERAL_KNOWLEDGE_FALLBACK));
+    }
+
+    @Test
+    void stripsHallucinatedCitationsAndDoesNotAutoAttachSuppliedChunksWhenUncited() {
+        KnowledgeChunk slide1 = new KnowledgeChunk(
+                "lec-5-p1-1",
+                "Lec-5-Building-AI-Powered-Java-Applications.pdf",
+                1,
+                1,
+                "Cover",
+                "Java Enterprise Application Development Lecture 5"
+        );
+        List<ScoredChunk> supplied = List.of(new ScoredChunk(slide1, 0.02, 2.5, 0.5));
+
+        // 1. Model returns pure general knowledge without citing slide1
+        TaResponse uncited = CitationVerifier.verifyAndFormat(
+                "An ArrayList is backed by a dynamic array; a LinkedList uses doubly-linked nodes.",
+                supplied,
+                "TestModel"
+        );
+        assertFalse(uncited.basedOnCourseMaterial(), "Must NOT auto-attach supplied chunks when model did not cite them");
+        assertTrue(uncited.citedChunks().isEmpty());
+        assertTrue(uncited.answer().contains(PluginConstants.GENERAL_KNOWLEDGE_FALLBACK));
+
+        // 2. Model fabricates [Source: Fake.pdf, Page 999] and [ChunkID: fake-id-99]
+        TaResponse hallucinated = CitationVerifier.verifyAndFormat(
+                "See [Source: Fake.pdf, Page 999] and [ChunkID: fake-id-99] for details.",
+                supplied,
+                "TestModel"
+        );
+        assertFalse(hallucinated.basedOnCourseMaterial());
+        assertFalse(hallucinated.answer().contains("Fake.pdf"));
+        assertFalse(hallucinated.answer().contains("fake-id-99"));
+        assertTrue(hallucinated.answer().contains("[Unverified Source removed]"));
+        assertTrue(hallucinated.answer().contains("[Unverified ChunkID removed]"));
+    }
 }

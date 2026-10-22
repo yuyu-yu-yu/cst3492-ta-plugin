@@ -4,15 +4,13 @@ import edu.tongji.cst3492.ta.PluginConstants;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Deterministic local Course TA client used for offline unit testing and live classroom demonstrations
- * when no external API key is configured or when the network is unavailable.
- * Synthesizes grounded responses directly from the retrieved course chunks and editor code context,
- * citing exact ChunkIDs, document names, and page numbers, or stating the general-knowledge fallback notice.
+ * Deterministic offline Course TA client for unit testing and offline demonstrations.
+ * Synthesizes responses strictly from the supplied {@code [ChunkID: ...]} passages in the prompt,
+ * never referencing unretrieved slide numbers or unverified facts.
  */
 public final class OfflineCourseTaClient implements ModelClient {
 
@@ -43,63 +41,34 @@ public final class OfflineCourseTaClient implements ModelClient {
         }
 
         StringBuilder sb = new StringBuilder();
-        sb.append("### CST3492 Course TA Explanation\n\n");
+        sb.append("### CST3492 Course TA Explanation (Offline Demo Mode)\n\n");
 
         if (!codeContext.isBlank()) {
-            sb.append("**Selected Code Analysis:**\n");
-            sb.append(analyzeSelectedCode(codeContext, question)).append("\n\n");
+            ParsedChunk primary = chunks.get(0);
+            sb.append("**Selected Code Context Analysis:**\n");
+            sb.append("Analyzing your selected snippet (`").append(firstLinePreview(codeContext))
+                    .append("`) against retrieved course material ")
+                    .append("[ChunkID: ").append(primary.id()).append("] ")
+                    .append("[Source: ").append(primary.source()).append(", ").append(primary.pageScope()).append("].\n\n");
         }
 
-        sb.append("**Course Material Synthesis:**\n");
+        sb.append("**Relevant Course Material Passages:**\n");
         for (int i = 0; i < Math.min(2, chunks.size()); i++) {
             ParsedChunk c = chunks.get(i);
             String excerpt = summarizeExcerpt(c.content());
             sb.append("- **").append(c.sectionTitle()).append("** ")
-                    .append("(`[ChunkID: ").append(c.id()).append("]`, ")
-                    .append("`[Source: ").append(c.source()).append(", ").append(c.pageScope()).append("]`):\n  ")
+                    .append("[ChunkID: ").append(c.id()).append("] ")
+                    .append("[Source: ").append(c.source()).append(", ").append(c.pageScope()).append("]:\n  ")
                     .append(excerpt).append("\n");
         }
 
         ParsedChunk primary = chunks.get(0);
-        sb.append("\n**Key Takeaway for Your Question:**\n");
-        sb.append(synthesizeCourseTakeaway(question, primary));
+        sb.append("\n**Summary:**\n");
+        sb.append("Based on **").append(primary.sectionTitle()).append("** in ")
+                .append("[Source: ").append(primary.source()).append(", ").append(primary.pageScope()).append("], ")
+                .append(summarizeExcerpt(primary.content()));
 
         return sb.toString().trim();
-    }
-
-    private static String analyzeSelectedCode(String code, String question) {
-        String lowerCode = code.toLowerCase(Locale.ROOT);
-        List<String> observations = new ArrayList<>();
-        if (lowerCode.contains("httpclient") || lowerCode.contains("httprequest")) {
-            observations.add("This code uses JDK `HttpClient` to construct and send an HTTP request (covered in Lecture 5 Slide 17 on calling LLM APIs with explicit timeouts and Bearer headers).");
-        }
-        if (lowerCode.contains("record ")) {
-            observations.add("It defines an immutable Java `record` for structured data contracts (covered in Lecture 5 Slide 20 on `Feedback` records and compact constructors).");
-        }
-        if (lowerCode.contains("executorservice") || lowerCode.contains("future")) {
-            observations.add("It manages concurrent execution with `ExecutorService` / `Future` timeouts so slow tasks do not block the application (covered in Lecture 5 Slide 37).");
-        }
-        if (lowerCode.contains("map") || lowerCode.contains("hashmap") || lowerCode.contains("list")) {
-            observations.add("It operates on Java Collections (`Map` / `List`). Be mindful of null keys/values and avoiding `ConcurrentModificationException` when mutating during iteration.");
-        }
-        if (observations.isEmpty()) {
-            observations.add("Examining the selected snippet (`" + firstLinePreview(code) + "`) in relation to your question: *" + question + "*.");
-        }
-        return String.join(" ", observations);
-    }
-
-    private static String synthesizeCourseTakeaway(String question, ParsedChunk primary) {
-        String q = question.toLowerCase(Locale.ROOT);
-        if (q.contains("rrf") || q.contains("reciprocal") || q.contains("hybrid")) {
-            return "In CST3492 Lecture 5, **Hybrid Retrieval** combines **Keyword Search (BM25)** (which excels at exact identifier matches) and **Vector Search (Cosine Similarity)** (which captures semantic meaning) using **Reciprocal Rank Fusion (RRF)**: `score(p) = sum(1 / (60 + rank))` because BM25 and cosine similarity operate on different numerical scales (`[Source: " + primary.source() + ", " + primary.pageScope() + "]`).";
-        }
-        if (q.contains("rag") || q.contains("cite") || q.contains("citation")) {
-            return "Our course RAG pipeline follows four steps: **1. Chunk** course notes into passages with IDs, **2. Index** via keyword + vector indexes, **3. Retrieve** top passages per query, and **4. Generate** a response where the model cites supplied passage IDs and Java verifies every cited ID was actually supplied (`[Source: " + primary.source() + ", " + primary.pageScope() + "]`).";
-        }
-        if (q.contains("tool") || q.contains("loop") || q.contains("agent")) {
-            return "As shown in the course slides, an AI tool is a read-only Java method dispatched by `ToolDispatcher` after checking the allow-list, and the tool loop is strictly bounded (`MAX_TOOL_ROUNDS = 3`) to prevent infinite API calls (`[Source: " + primary.source() + ", " + primary.pageScope() + "]`).";
-        }
-        return "According to **" + primary.source() + " (" + primary.pageScope() + ")**, Java remains in control of ground-truth data, context retrieval, and validation while the LLM proposes drafts or explanations (`[Source: " + primary.source() + ", " + primary.pageScope() + "]`).";
     }
 
     private static String synthesizeGeneralJavaAnswer(String question, String codeContext) {
@@ -108,12 +77,12 @@ public final class OfflineCourseTaClient implements ModelClient {
         if (!codeContext.isBlank()) {
             sb.append("Regarding your selected code (`").append(firstLinePreview(codeContext)).append("`) and question (*")
                     .append(question).append("*):\n\n");
-            sb.append("- Ensure clear separation of concerns, immutable data carriers (`record` where appropriate), and explicit null/boundary checks.\n");
-            sb.append("- Add targeted JUnit 5 tests covering normal execution, boundary inputs, and expected exceptions.\n");
+            sb.append("- Verify boundary conditions, null safety, and immutability of data carriers.\n");
+            sb.append("- Add unit tests covering normal execution and edge cases.\n");
         } else {
-            sb.append("For your question (*").append(question).append("*):\n\n");
-            sb.append("No matching CST3492 lecture slide was found in the indexed knowledge base for this topic. ")
-                    .append("From general Java enterprise best practices, prefer standard library APIs, explicit error handling, and verifiable unit tests.");
+            sb.append("Regarding your question (*").append(question).append("*):\n\n");
+            sb.append("No matching CST3492 course slide was retrieved for this specific topic. ")
+                    .append("From general Java programming knowledge, follow standard JDK idioms, explicit error handling, and unit testing.");
         }
         return sb.toString();
     }
@@ -166,7 +135,7 @@ public final class OfflineCourseTaClient implements ModelClient {
 
     @Override
     public String providerName() {
-        return "CST3492 Built-in Course TA Engine (Offline/Demo Ready)";
+        return "CST3492 Offline Demo TA (Deterministic Local Synthesis)";
     }
 
     private record ParsedChunk(String id, String source, String pageScope, String sectionTitle, String content) {}

@@ -14,21 +14,29 @@ repositories {
     }
 }
 
+val localIdeaPath = providers.gradleProperty("localIdeaPath")
+    .orElse(providers.environmentVariable("LOCAL_IDEA_PATH"))
+val macDefaultIdea = file("/Applications/IntelliJ IDEA.app")
+val useLocalIdea262 = (localIdeaPath.isPresent && file(localIdeaPath.get()).exists())
+    || macDefaultIdea.exists()
+
 java {
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(25))
+        languageVersion.set(JavaLanguageVersion.of(if (useLocalIdea262) 25 else 21))
     }
 }
 
 tasks.withType<JavaCompile> {
     options.release.set(21)
+    options.encoding = "UTF-8"
 }
 
 dependencies {
     intellijPlatform {
-        val localIdea = file("/Applications/IntelliJ IDEA.app")
-        if (localIdea.exists()) {
-            local(localIdea)
+        if (localIdeaPath.isPresent && file(localIdeaPath.get()).exists()) {
+            local(file(localIdeaPath.get()))
+        } else if (macDefaultIdea.exists()) {
+            local(macDefaultIdea)
         } else {
             intellijIdeaCommunity("2025.1")
         }
@@ -57,15 +65,11 @@ intellijPlatform {
             Provides RAG-based course Q&A with explicit source & page citations and editor context awareness.
         """.trimIndent()
         ideaVersion {
-            sinceBuild = "241"
+            sinceBuild = "242"
             untilBuild = provider { null }
         }
     }
     buildSearchableOptions = false
-}
-
-tasks.withType<JavaCompile> {
-    options.encoding = "UTF-8"
 }
 
 tasks.test {

@@ -23,7 +23,10 @@ public final class TextTokenizer {
             "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "has", "have",
             "in", "is", "it", "its", "of", "on", "or", "that", "the", "their", "there",
             "these", "this", "to", "was", "were", "will", "with", "what", "when", "where",
-            "which", "who", "how", "why", "can", "could", "should", "would", "do", "does"
+            "which", "who", "how", "why", "can", "could", "should", "would", "do", "does",
+            "explain", "work", "works", "use", "using", "used", "please", "about",
+            "java", "enterprise", "application", "applications", "development", "course",
+            "lecture", "slide", "slides", "cst3492"
     );
 
     private TextTokenizer() {}

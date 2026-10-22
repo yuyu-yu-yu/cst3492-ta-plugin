@@ -22,6 +22,9 @@ import java.util.List;
 public final class OpenAiCompatibleModelClient implements ModelClient {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
+    private static final HttpClient SHARED_HTTP_CLIENT = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(12))
+            .build();
 
     private final HttpClient httpClient;
     private final String baseUrl;
@@ -38,9 +41,7 @@ public final class OpenAiCompatibleModelClient implements ModelClient {
         this.apiKey = apiKey == null ? "" : apiKey.trim();
         this.modelName = (modelName == null || modelName.isBlank()) ? "deepseek-chat" : modelName.trim();
         this.timeout = timeout;
-        this.httpClient = HttpClient.newBuilder()
-                .connectTimeout(Duration.ofSeconds(12))
-                .build();
+        this.httpClient = SHARED_HTTP_CLIENT;
     }
 
     public boolean isConfigured() {

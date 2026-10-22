@@ -27,6 +27,7 @@ import edu.tongji.cst3492.ta.llm.EditorCodeContext;
 import edu.tongji.cst3492.ta.llm.TaResponse;
 import edu.tongji.cst3492.ta.rag.KnowledgeChunk;
 import edu.tongji.cst3492.ta.service.TaProjectService;
+import edu.tongji.cst3492.ta.settings.TaSettingsState;
 
 import javax.swing.BorderFactory;
 import javax.swing.BoxLayout;
@@ -40,8 +41,11 @@ import java.awt.FlowLayout;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -50,6 +54,8 @@ import java.util.stream.Collectors;
  * explicit general-knowledge notices, active code context banner, and course slide indexer controls.
  */
 public final class TaToolWindowPanel extends JPanel {
+
+    private static final Pattern CODE_FENCE_PATTERN = Pattern.compile("```(?:[a-zA-Z0-9_\\-]+)?\\R([\\s\\S]*?)```");
 
     private final Project project;
     private final TaProjectService taService;
@@ -161,11 +167,12 @@ public final class TaToolWindowPanel extends JPanel {
         bottomPanel.add(composerContainer, BorderLayout.CENTER);
         add(bottomPanel, BorderLayout.SOUTH);
 
-        // Register listener for right-click context menu action
         taService.setContextSelectionListener(ctx -> SwingUtilities.invokeLater(() -> {
             updateCodeContextBadge(ctx);
             questionInput.requestFocusInWindow();
         }));
+
+        taService.setIndexUpdateListener(() -> SwingUtilities.invokeLater(this::updateKnowledgeBaseStatusLabel));
 
         resetTranscriptWithWelcome();
     }
@@ -188,7 +195,7 @@ public final class TaToolWindowPanel extends JPanel {
 
         JButton generalBtn = new JButton("General Knowledge Fallback");
         generalBtn.addActionListener(e -> {
-            questionInput.setText("How do I configure a CSS Grid responsive layout in a frontend web page?");
+            questionInput.setText("How does Spring Boot @Autowired dependency injection work?");
             submitCurrentQuestion();
         });
 
@@ -219,16 +226,26 @@ public final class TaToolWindowPanel extends JPanel {
         EditorCodeContext activeCtx = taService.getPendingCodeContext();
         questionInput.setText("");
         sendButton.setEnabled(false);
+        sendButton.setText("Thinking...");
 
         appendUserMessageHtml(question, activeCtx);
 
         ApplicationManager.getApplication().executeOnPooledThread(() -> {
-            TaResponse response = taService.askQuestion(question, activeCtx);
-            SwingUtilities.invokeLater(() -> {
-                appendTaResponseHtml(response);
-                sendButton.setEnabled(true);
-                questionInput.requestFocusInWindow();
-            });
+            try {
+                TaResponse response = taService.askQuestion(question, activeCtx);
+                SwingUtilities.invokeLater(() -> {
+                    appendTaResponseHtml(response);
+                    updateKnowledgeBaseStatusLabel();
+                });
+            } catch (Throwable t) {
+                SwingUtilities.invokeLater(() -> appendErrorHtml(t.getMessage()));
+            } finally {
+                SwingUtilities.invokeLater(() -> {
+                    sendButton.setText("Ask TA");
+                    sendButton.setEnabled(true);
+                    questionInput.requestFocusInWindow();
+                });
+            }
         });
     }
 
@@ -298,28 +315,52 @@ public final class TaToolWindowPanel extends JPanel {
         if (files.length == 0) {
             return;
         }
-        int totalNewChunks = 0;
+
+        List<Path> selectedPaths = new ArrayList<>();
         for (VirtualFile vf : files) {
-            try {
-                List<KnowledgeChunk> indexed = taService.knowledgeBase().indexFile(Path.of(vf.getPath()));
-                totalNewChunks += indexed.size();
-            } catch (Exception ex) {
-                Messages.showErrorDialog(project, "Failed to parse " + vf.getName() + ": " + ex.getMessage(), "Import Error");
-            }
+            selectedPaths.add(Path.of(vf.getPath()));
         }
-        updateKnowledgeBaseStatusLabel();
-        Messages.showInfoMessage(
-                project,
-                "Indexed " + files.length + " course file(s) (" + totalNewChunks + " searchable knowledge chunks).",
-                PluginConstants.PLUGIN_NAME
-        );
+
+        statusBannerLabel.setText("<html><b>RAG Index:</b> Indexing " + selectedPaths.size() + " file(s)...</html>");
+        ApplicationManager.getApplication().executeOnPooledThread(() -> {
+            int totalNewChunks = 0;
+            List<String> errors = new ArrayList<>();
+            TaSettingsState settings = TaSettingsState.getInstance();
+
+            for (Path path : selectedPaths) {
+                try {
+                    List<KnowledgeChunk> indexed = taService.knowledgeBase().indexFile(path);
+                    totalNewChunks += indexed.size();
+                    String abs = path.toAbsolutePath().toString();
+                    if (!settings.importedDocumentPaths.contains(abs)) {
+                        settings.importedDocumentPaths.add(abs);
+                    }
+                } catch (Exception ex) {
+                    errors.add(path.getFileName() + ": " + ex.getMessage());
+                }
+            }
+
+            int finalTotalNewChunks = totalNewChunks;
+            SwingUtilities.invokeLater(() -> {
+                updateKnowledgeBaseStatusLabel();
+                if (!errors.isEmpty()) {
+                    Messages.showErrorDialog(project, "Failed to parse:\n" + String.join("\n", errors), "Import Error");
+                } else {
+                    Messages.showInfoMessage(
+                            project,
+                            "Indexed " + selectedPaths.size() + " course file(s) (" + finalTotalNewChunks + " searchable knowledge chunks).",
+                            PluginConstants.PLUGIN_NAME
+                    );
+                }
+            });
+        });
     }
 
     private void updateKnowledgeBaseStatusLabel() {
         Map<String, Integer> docs = taService.knowledgeBase().documentSummary();
         int totalChunks = taService.knowledgeBase().totalChunks();
         String docList = docs.isEmpty()
-                ? "None"
+                ? "Indexing..."
                 : docs.entrySet().stream()
                 .map(e -> e.getKey() + " (" + e.getValue() + " chunks)")
                 .collect(Collectors.joining(", "));
@@ -386,17 +427,99 @@ public final class TaToolWindowPanel extends JPanel {
         renderTranscript();
     }
 
+    private void appendErrorHtml(String message) {
+        transcriptHtml.append("<div style='font-family:sans-serif; margin:8px; padding:10px; border:1px solid #C93B2B; border-radius:6px;'>")
+                .append("<b>CST3492 TA Error:</b> ").append(escapeHtml(message))
+                .append("</div>");
+        renderTranscript();
+    }
+
     private void renderTranscript() {
         transcriptPane.setText("<html><body>" + transcriptHtml + "</body></html>");
         transcriptPane.setCaretPosition(transcriptPane.getDocument().getLength());
     }
 
-    private static String formatMarkdownLikeHtml(String text) {
-        String escaped = escapeHtml(text);
-        // Convert bold **text** and inline `code`
+    public static String formatMarkdownLikeHtml(String text) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        // Extract fenced code blocks first
+        List<String> codeBlocks = new ArrayList<>();
+        Matcher fenceMatcher = CODE_FENCE_PATTERN.matcher(text);
+        StringBuilder withPlaceholders = new StringBuilder();
+        while (fenceMatcher.find()) {
+            String codeContent = fenceMatcher.group(1);
+            int idx = codeBlocks.size();
+            codeBlocks.add("<pre style='padding:6px; border:1px solid #666666; font-family:monospace;'>"
+                    + escapeHtml(codeContent.trim()) + "</pre>");
+            fenceMatcher.appendReplacement(withPlaceholders, "@@CODE_BLOCK_" + idx + "@@");
+        }
+        fenceMatcher.appendTail(withPlaceholders);
+
+        String[] lines = withPlaceholders.toString().split("\\R");
+        StringBuilder html = new StringBuilder();
+        boolean inList = false;
+
+        for (String rawLine : lines) {
+            String trimmed = rawLine.trim();
+            if (trimmed.equals("---")) {
+                if (inList) {
+                    html.append("</ul>");
+                    inList = false;
+                }
+                html.append("<hr/>");
+                continue;
+            }
+            if (trimmed.startsWith("### ")) {
+                if (inList) {
+                    html.append("</ul>");
+                    inList = false;
+                }
+                html.append("<div style='font-size:13px; font-weight:bold; margin:6px 0 3px 0;'>")
+                        .append(formatInlineMarkdown(trimmed.substring(4)))
+                        .append("</div>");
+            } else if (trimmed.startsWith("## ")) {
+                if (inList) {
+                    html.append("</ul>");
+                    inList = false;
+                }
+                html.append("<div style='font-size:14px; font-weight:bold; margin:8px 0 4px 0;'>")
+                        .append(formatInlineMarkdown(trimmed.substring(3)))
+                        .append("</div>");
+            } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+                if (!inList) {
+                    html.append("<ul style='margin:4px 0 4px 18px;'>");
+                    inList = true;
+                }
+                html.append("<li>").append(formatInlineMarkdown(trimmed.substring(2))).append("</li>");
+            } else {
+                if (inList) {
+                    html.append("</ul>");
+                    inList = false;
+                }
+                if (trimmed.isEmpty()) {
+                    html.append("<br/>");
+                } else {
+                    html.append(formatInlineMarkdown(rawLine)).append("<br/>");
+                }
+            }
+        }
+        if (inList) {
+            html.append("</ul>");
+        }
+
+        String result = html.toString();
+        for (int i = 0; i < codeBlocks.size(); i++) {
+            result = result.replace("@@CODE_BLOCK_" + i + "@@", codeBlocks.get(i));
+        }
+        return result;
+    }
+
+    private static String formatInlineMarkdown(String line) {
+        String escaped = escapeHtml(line);
         escaped = escaped.replaceAll("\\*\\*([^*]+)\\*\\*", "<b>$1</b>");
         escaped = escaped.replaceAll("`([^`]+)`", "<code>$1</code>");
-        return escaped.replace("\n", "<br/>");
+        return escaped;
     }
 
     private static String truncateCode(String code, int maxLen) {

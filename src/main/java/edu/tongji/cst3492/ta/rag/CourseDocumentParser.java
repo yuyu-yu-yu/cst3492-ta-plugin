@@ -209,9 +209,12 @@ public final class CourseDocumentParser {
                 .replaceAll("[^a-z0-9]+", "-")
                 .replaceAll("^-+|-+$", "");
         if (stem.isBlank()) {
-            return "doc";
+            stem = "doc";
+        } else if (stem.length() > 14) {
+            stem = stem.substring(0, 14).replaceAll("-+$", "");
         }
-        return stem.length() > 16 ? stem.substring(0, 16).replaceAll("-+$", "") : stem;
+        String hashSuffix = String.format("%04x", documentName.hashCode() & 0xFFFF);
+        return stem + "-" + hashSuffix;
     }
 
     public record PageContent(int pageNumber, String heading, String text) {}

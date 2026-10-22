@@ -5,14 +5,14 @@ An AI-powered Teaching Assistant (TA) plugin for **CST3492 - Java Enterprise App
 ## Features (F0: Basic Functionalities)
 
 1. **Course-Specific RAG Q&A Chatbot with Verifiable Source Citations**
-   - **Document Parsing & Page-Scope Chunking**: Parses course lecture PDFs (via Apache PDFBox & Apache Tika) per page and segments them into overlapping knowledge chunks while preserving exact document name and page number/scope metadata.
-   - **Hybrid Retrieval Engine**: Combines **BM25 Inverted Keyword Index** and **Semantic Vector Cosine Similarity** merged via **Reciprocal Rank Fusion (RRF)** (`k = 60`).
+   - **Document Parsing & Page-Scope Chunking**: Parses course lecture PDFs (via Apache PDFBox with Apache Tika MIME detection) per page and segments them into overlapping knowledge chunks with collision-free IDs while preserving exact document name and page number/scope metadata.
+   - **Hybrid Retrieval Engine**: Combines **Okapi BM25 Inverted Keyword Index** and **Domain-Lexicon & Feature-Hashing Vector Index** (following Lecture 5 Slide 24-27) merged via **Reciprocal Rank Fusion (RRF)** (`k = 60`).
    - **Strict Source Citation & General-Knowledge Fallback**:
-     - Cites exact source document and page scope (e.g., `[Source: Lec-5-Building-AI-Powered-Java-Applications.pdf, Page: 23]`) for answers grounded in retrieved course materials.
+     - Verifies that every cited `[ChunkID: ...]` or `[Source: <doc>, Page <n>]` matches a passage actually supplied by Java, stripping any hallucinated citations.
      - Explicitly states *"Response is based on general knowledge; no specific course material is referenced."* when no relevant course material matches the query or when the LLM does not cite supplied course chunks.
 
 2. **Embedded IntelliJ IDEA User Interface**
-   - Right-side **Tool Window** (`CST3492 TA`) featuring multi-turn Q&A chat cards, clickable/highlighted source citation badges, indexed course document manager (import additional PDFs or re-index workspace slides), and LLM API settings dialog.
+   - Right-side **Tool Window** (`CST3492 TA`) featuring multi-turn Q&A chat cards, highlighted source verification banners, async course slide importer (`Import Slides`), and LLM API settings dialog (`LLM Settings`).
 
 3. **Editor Programming Context Awareness**
    - **Right-Click Context Menu Action** (`Ask CST3492 TA About Selected Code`): Captures selected Java code, file name, surrounding class/method context, and line numbers in the active editor, allowing users to ask targeted questions about their code.
