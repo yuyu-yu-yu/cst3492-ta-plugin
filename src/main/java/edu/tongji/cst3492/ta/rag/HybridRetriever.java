@@ -6,6 +6,8 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Hybrid RAG retriever combining {@link KeywordIndex} (BM25) and {@link VectorIndex} (Cosine Similarity)
@@ -17,9 +19,18 @@ public final class HybridRetriever {
     public static final int DEFAULT_RRF_K = 60;
     public static final int DEFAULT_CANDIDATE_WINDOW = 15;
     public static final double DEFAULT_MIN_RELEVANCE_SCORE = 0.015;
-    public static final double MIN_BM25_SCORE = 2.0;
-    public static final double MIN_SEMANTIC_ONLY_COSINE = 0.42;
+    public static final double MIN_BM25_SCORE = 2.6;
+    public static final double MIN_SEMANTIC_ONLY_COSINE = 0.62;
 
+    private static final Set<String> COURSE_AI_OR_RAG_TERMS = Set.of(
+            "rag", "bm25", "vector", "hybrid", "rrf", "reciprocal", "fusion",
+            "chunk", "chunks", "chunking", "passage", "passages", "embedding", "embeddings",
+            "cosine", "dictionary", "lookup", "llm", "model", "modelclient", "deepseek",
+            "prompt", "injection", "boundary", "tool", "tools", "tooldispatcher", "dispatcher",
+            "session", "feedbacksession", "history", "trimhistory", "feedback", "feedbackvalidator",
+            "gradebook", "cite", "cites", "cited", "citation", "citations", "evidence",
+            "risk", "risklevel", "timeout", "parallel", "classdrafter", "recall"
+    );
     private final KeywordIndex keywordIndex;
     private final VectorIndex vectorIndex;
     private final int rrfK;
@@ -44,8 +55,13 @@ public final class HybridRetriever {
         List<ScoredChunk> keywordRanking = keywordIndex.search(query, window);
         List<ScoredChunk> vectorRanking = vectorIndex.search(query, window);
 
-        boolean hasKeywordMatch = !keywordRanking.isEmpty() && keywordRanking.get(0).keywordScore() >= MIN_BM25_SCORE;
-        boolean hasSemanticMatch = !vectorRanking.isEmpty() && vectorRanking.get(0).vectorScore() >= MIN_SEMANTIC_ONLY_COSINE;
+        boolean aiOrRagQuery = isCourseAiOrRagQuery(query);
+        boolean hasPromptTerm = TextTokenizer.termFrequencies(query).containsKey("prompt");
+        boolean hasKeywordMatch = !keywordRanking.isEmpty()
+                && (keywordRanking.get(0).keywordScore() >= MIN_BM25_SCORE
+                || (keywordRanking.get(0).keywordScore() >= 1.4 && !vectorRanking.isEmpty() && vectorRanking.get(0).vectorScore() >= 0.38));
+        boolean hasSemanticMatch = !vectorRanking.isEmpty()
+                && (vectorRanking.get(0).vectorScore() >= MIN_SEMANTIC_ONLY_COSINE && aiOrRagQuery);
         if (!hasKeywordMatch && !hasSemanticMatch) {
             return List.of();
         }
@@ -77,13 +93,39 @@ public final class HybridRetriever {
             double rrfScore = entry.getValue();
             double kw = kwScores.getOrDefault(id, 0.0);
             double vec = vecScores.getOrDefault(id, 0.0);
-            if (rrfScore >= minRelevanceScore && (kw >= MIN_BM25_SCORE || vec >= MIN_SEMANTIC_ONLY_COSINE)) {
+            boolean validCandidate = kw >= MIN_BM25_SCORE
+                    || (kw >= 1.5 && vec >= 0.45)
+                    || (hasPromptTerm && kw >= 1.4 && vec >= 0.38)
+                    || (vec >= MIN_SEMANTIC_ONLY_COSINE && aiOrRagQuery);
+            if (rrfScore >= minRelevanceScore && validCandidate) {
                 merged.add(new ScoredChunk(byId.get(id), rrfScore, kw, vec));
             }
         }
 
         Collections.sort(merged);
-        return merged.size() <= topK ? merged : List.copyOf(merged.subList(0, topK));
+
+        List<ScoredChunk> deduplicated = new ArrayList<>();
+        Set<String> seenDocPages = new HashSet<>();
+        for (ScoredChunk sc : merged) {
+            String pageKey = sc.chunk().documentName() + "#" + sc.chunk().startPage();
+            if (seenDocPages.add(pageKey)) {
+                deduplicated.add(sc);
+                if (deduplicated.size() >= topK) {
+                    break;
+                }
+            }
+        }
+        return List.copyOf(deduplicated);
+    }
+
+    static boolean isCourseAiOrRagQuery(String query) {
+        Map<String, Integer> terms = TextTokenizer.termFrequencies(query);
+        for (String term : terms.keySet()) {
+            if (COURSE_AI_OR_RAG_TERMS.contains(term)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public KeywordIndex keywordIndex() {

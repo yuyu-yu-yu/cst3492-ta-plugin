@@ -13,8 +13,8 @@ import java.util.Set;
  */
 public final class EmbeddingModel {
 
-    private static final int CONCEPT_DIMS = 12;
-    private static final int HASH_DIMS = 116;
+    private static final int CONCEPT_DIMS = 13;
+    private static final int HASH_DIMS = 115;
     public static final int TOTAL_DIMS = CONCEPT_DIMS + HASH_DIMS;
 
     private static final List<Set<String>> CONCEPT_CLUSTERS = List.of(
@@ -26,7 +26,6 @@ public final class EmbeddingModel {
             Set.of("exception", "exceptions", "try", "catch", "finally", "throw", "throws", "runtimeexception", "checked", "unchecked", "invalidfeedbackexception", "toolscopeexception"),
             // 3: RAG / Retrieval / Chunking / Citations
             Set.of("rag", "retrieval", "retrieve", "retriever", "hybrid", "hybridretriever", "chunk", "chunks", "chunking", "passage", "passages", "cite", "citation", "citations", "evidence"),
-            // 4: Keyword / BM25 / Inverted Index
             Set.of("keyword", "keywords", "keywordindex", "bm25", "inverted", "index", "indexing"),
             // 5: Vector / Embedding / Cosine / Reciprocal Rank Fusion
             Set.of("vector", "vectors", "vectorindex", "embedding", "embeddings", "embeddingmodel", "cosine", "similarity", "semantic", "rrf", "reciprocal", "fusion"),
@@ -41,7 +40,9 @@ public final class EmbeddingModel {
             // 10: Concurrency / Thread Pool / Future Timeout
             Set.of("executor", "executorservice", "threadpool", "future", "timeout", "timeoutexception", "parallel", "classdrafter"),
             // 11: Testing / JUnit / Recall Evaluation
-            Set.of("junit", "assert", "assertion", "offline", "verification", "recall")
+            Set.of("junit", "assert", "assertion", "offline", "verification", "recall"),
+            // 12: Prompt Security / Boundary & Citation Checking (Slide 28-29)
+            Set.of("prompt", "injection", "defend", "ignore", "boundary", "instructions", "rules", "data", "cite", "cites", "cited", "supplied", "never", "invalid", "draft")
     );
 
     public float[] embed(String text) {
