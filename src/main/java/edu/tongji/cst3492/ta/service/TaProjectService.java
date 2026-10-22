@@ -128,15 +128,16 @@ public final class TaProjectService {
         this.indexUpdateListener = listener;
     }
 
+    /**
+     * Offline mode always uses the deterministic built-in TA. Online mode always uses the configured
+     * OpenAI-compatible endpoint; a missing API key surfaces as an explicit error from the client
+     * instead of silently degrading to offline answers.
+     */
     private static ModelClient createModelClientFromSettings() {
         TaSettingsState settings = TaSettingsState.getInstance();
         if (settings.offlineDemoMode) {
             return new OfflineCourseTaClient();
         }
-        String apiKey = settings.resolveApiKey();
-        if (apiKey != null && !apiKey.isBlank()) {
-            return new OpenAiCompatibleModelClient(settings.apiBaseUrl, apiKey, settings.modelName);
-        }
-        return new OfflineCourseTaClient();
+        return new OpenAiCompatibleModelClient(settings.apiBaseUrl, settings.resolveApiKey(), settings.modelName);
     }
 }
