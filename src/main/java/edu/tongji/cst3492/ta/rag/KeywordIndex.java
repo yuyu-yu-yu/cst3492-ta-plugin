@@ -54,6 +54,7 @@ public final class KeywordIndex {
         }
 
         double[] scores = new double[chunks.size()];
+        int[] matchedDistinctTerms = new int[chunks.size()];
         int totalDocs = chunks.size();
 
         for (Map.Entry<String, Integer> entry : queryTerms.entrySet()) {
@@ -72,12 +73,14 @@ public final class KeywordIndex {
                 double numerator = tf * (DEFAULT_K1 + 1.0);
                 double denominator = tf + DEFAULT_K1 * (1.0 - DEFAULT_B + DEFAULT_B * normLength);
                 scores[docIdx] += idf * (numerator / denominator);
+                matchedDistinctTerms[docIdx]++;
             }
         }
 
+        int minRequiredTerms = queryTerms.size() >= 3 ? 2 : 1;
         List<ScoredChunk> results = new ArrayList<>();
         for (int i = 0; i < chunks.size(); i++) {
-            if (scores[i] > 0.0) {
+            if (scores[i] > 0.0 && (matchedDistinctTerms[i] >= minRequiredTerms || scores[i] >= 4.5)) {
                 results.add(new ScoredChunk(chunks.get(i), scores[i], scores[i], 0.0));
             }
         }
