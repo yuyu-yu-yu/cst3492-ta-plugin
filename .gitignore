@@ -7,3 +7,8 @@ out/
 *.iws
 .DS_Store
 local.properties
+.intellijPlatform/
+.classpath
+.project
+.settings/
+bin/
