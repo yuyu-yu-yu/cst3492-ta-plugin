@@ -11,6 +11,8 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -213,8 +215,25 @@ public final class CourseDocumentParser {
         } else if (stem.length() > 14) {
             stem = stem.substring(0, 14).replaceAll("-+$", "");
         }
-        String hashSuffix = String.format("%04x", documentName.hashCode() & 0xFFFF);
+        String hashSuffix = sha256HexPrefix(documentName, 8);
         return stem + "-" + hashSuffix;
+    }
+
+    private static String sha256HexPrefix(String input, int hexChars) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] digest = md.digest(input.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(hexChars);
+            for (byte b : digest) {
+                sb.append(String.format("%02x", b & 0xFF));
+                if (sb.length() >= hexChars) {
+                    break;
+                }
+            }
+            return sb.substring(0, hexChars);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-256 not available", e);
+        }
     }
 
     public record PageContent(int pageNumber, String heading, String text) {}

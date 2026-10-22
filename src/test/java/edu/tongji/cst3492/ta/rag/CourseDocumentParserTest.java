@@ -74,8 +74,11 @@ class CourseDocumentParserTest {
         );
         List<KnowledgeChunk> cn1 = parser.parsePlainTextDocument("第一讲.pdf.txt", "# 第一讲\nJava 基础");
         List<KnowledgeChunk> cn2 = parser.parsePlainTextDocument("第二讲.pdf.txt", "# 第二讲\nRAG 架构");
+        List<KnowledgeChunk> collision1 = parser.parsePlainTextDocument("Java-Enterprise-Aa.md", "# Section\nContent A");
+        List<KnowledgeChunk> collision2 = parser.parsePlainTextDocument("Java-Enterprise-BB.md", "# Section\nContent B");
 
         assertNotEquals(doc1.get(0).id(), doc2.get(0).id(), "Long similar filenames must produce distinct chunk IDs");
         assertNotEquals(cn1.get(0).id(), cn2.get(0).id(), "Non-ASCII filenames must produce distinct chunk IDs");
+        assertNotEquals(collision1.get(0).id(), collision2.get(0).id(), "Java-Enterprise-Aa.md and Java-Enterprise-BB.md must produce distinct SHA-256 chunk IDs");
     }
 }

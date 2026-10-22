@@ -14,15 +14,20 @@ repositories {
     }
 }
 
+// Use a local IDE only when explicitly configured (Gradle property `localIdeaPath` / env `LOCAL_IDEA_PATH`)
+// or when the default macOS install exists; otherwise download IntelliJ IDEA Community 2025.1.
 val localIdeaPath = providers.gradleProperty("localIdeaPath")
     .orElse(providers.environmentVariable("LOCAL_IDEA_PATH"))
 val macDefaultIdea = file("/Applications/IntelliJ IDEA.app")
-val useLocalIdea262 = (localIdeaPath.isPresent && file(localIdeaPath.get()).exists())
-    || macDefaultIdea.exists()
+val explicitLocalIdea = localIdeaPath.orNull?.takeIf { it.isNotBlank() }?.let { file(it) }?.takeIf { it.exists() }
+val localIdea = explicitLocalIdea ?: macDefaultIdea.takeIf { it.exists() }
+// A local (2026.x) IDE bundles JBR 25 and requires a JDK 25 toolchain; the downloaded 2025.1 runs on JDK 21.
+// Bytecode is always compiled with --release 21, so both setups produce identical plugin classes.
+val useLocalIdea = localIdea != null
 
 java {
     toolchain {
-        languageVersion.set(JavaLanguageVersion.of(if (useLocalIdea262) 25 else 21))
+        languageVersion.set(JavaLanguageVersion.of(if (useLocalIdea) 25 else 21))
     }
 }
 
@@ -33,10 +38,9 @@ tasks.withType<JavaCompile> {
 
 dependencies {
     intellijPlatform {
-        if (localIdeaPath.isPresent && file(localIdeaPath.get()).exists()) {
-            local(file(localIdeaPath.get()))
-        } else if (macDefaultIdea.exists()) {
-            local(macDefaultIdea)
+        val localIde = localIdea
+        if (localIde != null) {
+            local(localIde)
         } else {
             intellijIdeaCommunity("2025.1")
         }
@@ -53,6 +57,8 @@ dependencies {
     // Testing
     testImplementation("org.junit.jupiter:junit-jupiter:5.11.3")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+    // IntelliJ Platform Gradle Plugin 2.x test runtime needs org.junit.rules.TestRule (JUnit 4) on the classpath
+    testRuntimeOnly("junit:junit:4.13.2")
 }
 
 intellijPlatform {

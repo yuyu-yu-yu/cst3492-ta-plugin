@@ -160,4 +160,57 @@ class CitationVerifierAndClientTest {
         assertTrue(hallucinated.answer().contains("[Unverified Source removed]"));
         assertTrue(hallucinated.answer().contains("[Unverified ChunkID removed]"));
     }
+
+    @Test
+    void verifiesCitationsBeforeGeneralKnowledgeCheckAndSupportsFlexibleSyntaxAndPreventsCrossClauseMisbinding() {
+        KnowledgeChunk slide23 = new KnowledgeChunk(
+                "lec-5-p23-1",
+                "Lec-5-Building-AI-Powered-Java-Applications.pdf",
+                23,
+                23,
+                "RAG in Four Steps",
+                "1 Chunk, 2 Index, 3 Retrieve, 4 Generate."
+        );
+        KnowledgeChunk docAPage23 = new KnowledgeChunk(
+                "doc-a-p23-1",
+                "A.pdf",
+                23,
+                23,
+                "Unused Doc A",
+                "Unrelated text on page 23 of A.pdf"
+        );
+        KnowledgeChunk docBPage23 = new KnowledgeChunk(
+                "doc-b-p23-1",
+                "B.pdf",
+                23,
+                23,
+                "Doc B RAG",
+                "RAG uses four steps."
+        );
+
+        // 1. Priority fix & flexible syntax ([Source: Lecture 5, Slide: 22-24])
+        List<ScoredChunk> suppliedLec5 = List.of(new ScoredChunk(slide23, 0.03, 4.0, 0.8));
+        TaResponse flexibleAndGeneralPhrase = CitationVerifier.verifyAndFormat(
+                "This is not based on general knowledge alone; it comes from [Source: Lecture 5, Slides: 22–24].",
+                suppliedLec5,
+                "TestModel"
+        );
+        assertTrue(flexibleAndGeneralPhrase.basedOnCourseMaterial(), "Must verify citations before checking general knowledge phrase");
+        assertEquals(1, flexibleAndGeneralPhrase.citedChunks().size());
+        assertEquals("lec-5-p23-1", flexibleAndGeneralPhrase.citedChunks().get(0).id());
+
+        // 2. Prevent cross-document prose misbinding across sentences
+        List<ScoredChunk> suppliedAB = List.of(
+                new ScoredChunk(docAPage23, 0.03, 3.5, 0.7),
+                new ScoredChunk(docBPage23, 0.03, 4.1, 0.8)
+        );
+        TaResponse crossSentence = CitationVerifier.verifyAndFormat(
+                "A.pdf was not used. RAG uses [Source: B.pdf, Page 23].",
+                suppliedAB,
+                "TestModel"
+        );
+        assertTrue(crossSentence.basedOnCourseMaterial());
+        assertEquals(1, crossSentence.citedChunks().size(), "Must only verify B.pdf Page 23 and not misbind A.pdf Page 23 across sentences");
+        assertEquals("B.pdf", crossSentence.citedChunks().get(0).documentName());
+    }
 }

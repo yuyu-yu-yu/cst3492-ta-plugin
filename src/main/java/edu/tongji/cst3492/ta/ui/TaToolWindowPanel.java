@@ -44,6 +44,8 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -66,6 +68,13 @@ public final class TaToolWindowPanel extends JPanel {
     private final JLabel codeContextBadge;
     private final JButton sendButton;
     private final JButton clearContextButton;
+    private JButton ragBtn;
+    private JButton toolBtn;
+    private JButton generalBtn;
+    /** True while a question is being answered; blocks overlapping submissions from any entry point. */
+    private final AtomicBoolean requestInFlight = new AtomicBoolean(false);
+    /** Incremented by "New Session" so responses of requests started before the reset are discarded. */
+    private final AtomicLong uiSessionEpoch = new AtomicLong(0);
 
     public TaToolWindowPanel(Project project) {
         super(new BorderLayout(0, 6));
@@ -93,7 +102,10 @@ public final class TaToolWindowPanel extends JPanel {
 
         JButton clearChatBtn = new JButton("New Session");
         clearChatBtn.addActionListener(e -> {
+            uiSessionEpoch.incrementAndGet();
             taService.chatSession().resetSession();
+            requestInFlight.set(false);
+            setRequestControlsEnabled(true);
             resetTranscriptWithWelcome();
         });
 
@@ -181,19 +193,19 @@ public final class TaToolWindowPanel extends JPanel {
         JPanel bar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
         bar.add(new JLabel("Quick Demo:"));
 
-        JButton ragBtn = new JButton("4 Steps of RAG");
+        ragBtn = new JButton("4 Steps of RAG");
         ragBtn.addActionListener(e -> {
             questionInput.setText("What are the four steps of RAG in Lecture 5 and how does Reciprocal Rank Fusion merge rankings?");
             submitCurrentQuestion();
         });
 
-        JButton toolBtn = new JButton("Tools & Bounded Loop");
+        toolBtn = new JButton("Tools & Bounded Loop");
         toolBtn.addActionListener(e -> {
             questionInput.setText("How does ToolDispatcher validate tool calls and why does the loop need a STEP_LIMIT in Lecture 5?");
             submitCurrentQuestion();
         });
 
-        JButton generalBtn = new JButton("General Knowledge Fallback");
+        generalBtn = new JButton("General Knowledge Fallback");
         generalBtn.addActionListener(e -> {
             questionInput.setText("How does Spring Boot @Autowired dependency injection work?");
             submitCurrentQuestion();
@@ -203,6 +215,19 @@ public final class TaToolWindowPanel extends JPanel {
         bar.add(toolBtn);
         bar.add(generalBtn);
         return bar;
+    }
+
+    public boolean isRequestInFlight() {
+        return requestInFlight.get();
+    }
+
+    /** Toggles the send button and Quick Demo buttons; must be called on the EDT. */
+    private void setRequestControlsEnabled(boolean enabled) {
+        sendButton.setText(enabled ? "Ask TA" : "Thinking...");
+        sendButton.setEnabled(enabled);
+        ragBtn.setEnabled(enabled);
+        toolBtn.setEnabled(enabled);
+        generalBtn.setEnabled(enabled);
     }
 
     public void prefillQuestionWithContext(EditorCodeContext context, String suggestedQuestion) {
@@ -223,10 +248,13 @@ public final class TaToolWindowPanel extends JPanel {
         if (question.isEmpty()) {
             return;
         }
+        if (!requestInFlight.compareAndSet(false, true)) {
+            return;
+        }
+        long epochAtSubmit = uiSessionEpoch.get();
         EditorCodeContext activeCtx = taService.getPendingCodeContext();
         questionInput.setText("");
-        sendButton.setEnabled(false);
-        sendButton.setText("Thinking...");
+        setRequestControlsEnabled(false);
 
         appendUserMessageHtml(question, activeCtx);
 
@@ -234,15 +262,26 @@ public final class TaToolWindowPanel extends JPanel {
             try {
                 TaResponse response = taService.askQuestion(question, activeCtx);
                 SwingUtilities.invokeLater(() -> {
+                    if (uiSessionEpoch.get() != epochAtSubmit) {
+                        return;
+                    }
                     appendTaResponseHtml(response);
                     updateKnowledgeBaseStatusLabel();
                 });
             } catch (Throwable t) {
-                SwingUtilities.invokeLater(() -> appendErrorHtml(t.getMessage()));
+                SwingUtilities.invokeLater(() -> {
+                    if (uiSessionEpoch.get() != epochAtSubmit) {
+                        return;
+                    }
+                    appendErrorHtml(t.getMessage());
+                });
             } finally {
                 SwingUtilities.invokeLater(() -> {
-                    sendButton.setText("Ask TA");
-                    sendButton.setEnabled(true);
+                    if (uiSessionEpoch.get() != epochAtSubmit) {
+                        return;
+                    }
+                    requestInFlight.set(false);
+                    setRequestControlsEnabled(true);
                     questionInput.requestFocusInWindow();
                 });
             }
@@ -458,54 +497,47 @@ public final class TaToolWindowPanel extends JPanel {
 
         String[] lines = withPlaceholders.toString().split("\\R");
         StringBuilder html = new StringBuilder();
-        boolean inList = false;
+        String openList = null; // "ul", "ol", or null when no list is open
 
         for (String rawLine : lines) {
             String trimmed = rawLine.trim();
-            if (trimmed.equals("---")) {
-                if (inList) {
-                    html.append("</ul>");
-                    inList = false;
-                }
-                html.append("<hr/>");
-                continue;
+            String listTag = null;
+            String itemText = null;
+            if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
+                listTag = "ul";
+                itemText = trimmed.substring(2);
+            } else if (trimmed.matches("^\\d+\\.\\s+.*")) {
+                listTag = "ol";
+                itemText = trimmed.substring(trimmed.indexOf('.') + 1).trim();
             }
-            if (trimmed.startsWith("### ")) {
-                if (inList) {
-                    html.append("</ul>");
-                    inList = false;
+            if (openList != null && !openList.equals(listTag)) {
+                html.append("</").append(openList).append(">");
+                openList = null;
+            }
+            if (listTag != null) {
+                if (openList == null) {
+                    html.append("<").append(listTag).append(" style='margin:4px 0 4px 18px;'>");
+                    openList = listTag;
                 }
+                html.append("<li>").append(formatInlineMarkdown(itemText)).append("</li>");
+            } else if (trimmed.equals("---")) {
+                html.append("<hr/>");
+            } else if (trimmed.startsWith("### ")) {
                 html.append("<div style='font-size:13px; font-weight:bold; margin:6px 0 3px 0;'>")
                         .append(formatInlineMarkdown(trimmed.substring(4)))
                         .append("</div>");
             } else if (trimmed.startsWith("## ")) {
-                if (inList) {
-                    html.append("</ul>");
-                    inList = false;
-                }
                 html.append("<div style='font-size:14px; font-weight:bold; margin:8px 0 4px 0;'>")
                         .append(formatInlineMarkdown(trimmed.substring(3)))
                         .append("</div>");
-            } else if (trimmed.startsWith("- ") || trimmed.startsWith("* ")) {
-                if (!inList) {
-                    html.append("<ul style='margin:4px 0 4px 18px;'>");
-                    inList = true;
-                }
-                html.append("<li>").append(formatInlineMarkdown(trimmed.substring(2))).append("</li>");
+            } else if (trimmed.isEmpty()) {
+                html.append("<br/>");
             } else {
-                if (inList) {
-                    html.append("</ul>");
-                    inList = false;
-                }
-                if (trimmed.isEmpty()) {
-                    html.append("<br/>");
-                } else {
-                    html.append(formatInlineMarkdown(rawLine)).append("<br/>");
-                }
+                html.append(formatInlineMarkdown(rawLine)).append("<br/>");
             }
         }
-        if (inList) {
-            html.append("</ul>");
+        if (openList != null) {
+            html.append("</").append(openList).append(">");
         }
 
         String result = html.toString();

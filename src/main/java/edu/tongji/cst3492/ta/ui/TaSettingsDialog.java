@@ -2,10 +2,12 @@ package edu.tongji.cst3492.ta.ui;
 
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.DialogWrapper;
+import com.intellij.ui.DocumentAdapter;
 import com.intellij.util.ui.FormBuilder;
 import com.intellij.util.ui.JBUI;
 import edu.tongji.cst3492.ta.service.TaProjectService;
 import edu.tongji.cst3492.ta.settings.TaSettingsState;
+import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
 import javax.swing.JComboBox;
@@ -16,6 +18,7 @@ import javax.swing.JPasswordField;
 import javax.swing.JSpinner;
 import javax.swing.JTextField;
 import javax.swing.SpinnerNumberModel;
+import javax.swing.event.DocumentEvent;
 import java.awt.BorderLayout;
 
 /**
@@ -57,36 +60,45 @@ public final class TaSettingsDialog extends DialogWrapper {
         } else {
             presetCombo.setSelectedIndex(0);
         }
+        updateOnlineFieldsEnabled(!settings.offlineDemoMode);
 
         presetCombo.addActionListener(e -> {
             int idx = presetCombo.getSelectedIndex();
             if (idx == 0) {
                 apiBaseUrlField.setText("https://api.deepseek.com/v1");
                 modelNameField.setText("deepseek-chat");
-                apiBaseUrlField.setEnabled(true);
-                modelNameField.setEnabled(true);
-                apiKeyField.setEnabled(true);
             } else if (idx == 1) {
                 apiBaseUrlField.setText("https://agi.tongji.edu.cn/v1");
                 modelNameField.setText("DeepSeek-V4.1-Flash");
-                apiBaseUrlField.setEnabled(true);
-                modelNameField.setEnabled(true);
-                apiKeyField.setEnabled(true);
-            } else if (idx == 2) {
-                apiBaseUrlField.setEnabled(false);
-                modelNameField.setEnabled(false);
-                apiKeyField.setEnabled(false);
+            }
+            updateOnlineFieldsEnabled(idx != 2);
+        });
+
+        // Entering an API key while in offline mode switches to the online provider matching the base URL.
+        apiKeyField.getDocument().addDocumentListener(new DocumentAdapter() {
+            @Override
+            protected void textChanged(@NotNull DocumentEvent e) {
+                if (presetCombo.getSelectedIndex() == 2 && !new String(apiKeyField.getPassword()).isBlank()) {
+                    presetCombo.setSelectedIndex(apiBaseUrlField.getText().contains("tongji.edu.cn") ? 1 : 0);
+                }
             }
         });
 
         init();
     }
 
+    /** The API key field stays editable in offline mode so that typing a key can switch back online. */
+    private void updateOnlineFieldsEnabled(boolean online) {
+        apiBaseUrlField.setEnabled(online);
+        modelNameField.setEnabled(online);
+    }
+
     @Override
     protected @Nullable JComponent createCenterPanel() {
         JLabel hintLabel = new JLabel(
-                "<html><small>Security Note (Lecture 5 Slide 17): API Keys are kept in memory only (or read from "
-                        + "<code>DEEPSEEK_API_KEY</code> / <code>TONGJI_API_KEY</code>) and never saved in plain-text XML.</small></html>"
+                "<html><small>Security Note (Lecture 5 Slide 17): API Keys are stored in the IDE Password Safe "
+                        + "(or read from <code>DEEPSEEK_API_KEY</code> / <code>TONGJI_API_KEY</code>) and never saved in plain-text XML.<br/>"
+                        + "Online providers require an API key; choose <i>Built-in Offline Course TA</i> to work without one.</small></html>"
         );
         JPanel formPanel = FormBuilder.createFormBuilder()
                 .addLabeledComponent("Provider Mode:", presetCombo, 1, false)
@@ -105,10 +117,12 @@ public final class TaSettingsDialog extends DialogWrapper {
     @Override
     protected void doOKAction() {
         TaSettingsState settings = TaSettingsState.getInstance();
-        settings.offlineDemoMode = (presetCombo.getSelectedIndex() == 2);
+        String apiKey = new String(apiKeyField.getPassword()).trim();
+        // DeepSeek / Tongji presets are online mode (typing a key while offline already switched the preset).
+        settings.offlineDemoMode = presetCombo.getSelectedIndex() == 2;
         settings.apiBaseUrl = apiBaseUrlField.getText().trim();
         settings.modelName = modelNameField.getText().trim();
-        settings.setSessionApiKey(new String(apiKeyField.getPassword()).trim());
+        settings.setSessionApiKey(apiKey);
         settings.topKChunks = (Integer) topKSpinner.getValue();
         if (project != null) {
             TaProjectService.getInstance(project).refreshClientFromSettings();

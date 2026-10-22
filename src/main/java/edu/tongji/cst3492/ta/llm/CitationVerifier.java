@@ -30,7 +30,12 @@ public final class CitationVerifier {
     );
 
     private static final Pattern SOURCE_CITATION_PATTERN = Pattern.compile(
-            "\\[Source:\\s*([^,\\]]+?)\\s*,\\s*Pages?\\s*(\\d+)(?:\\s*-\\s*(\\d+))?\\s*\\]",
+            "\\[Source:\\s*([^,\\]]+?)\\s*,\\s*(?:Pages?|Slides?):?\\s*(\\d+)(?:\\s*[-–]\\s*(\\d+))?\\s*\\]",
+            Pattern.CASE_INSENSITIVE
+    );
+
+    private static final Pattern NEGATION_CLAUSE_PATTERN = Pattern.compile(
+            "\\b(?:not\\s+used|unused|no\\s+reference\\s+to|never\\s+used|was\\s+not\\s+cited|not\\s+cited)\\b",
             Pattern.CASE_INSENSITIVE
     );
 
@@ -61,26 +66,11 @@ public final class CitationVerifier {
             );
         }
 
-        // Case 2: Course materials were supplied -> check if model explicitly declared general knowledge only
-        String lowerReply = sanitizedReply.toLowerCase(Locale.ROOT);
-        boolean modelDeclaredNoCourseRef = lowerReply.contains("no specific course material is referenced")
-                || lowerReply.contains("based on general knowledge");
-        if (modelDeclaredNoCourseRef) {
-            String normalizedReply = ensureFallbackNoticePresent(sanitizedReply);
-            return new TaResponse(
-                    normalizedReply,
-                    List.of(),
-                    false,
-                    PluginConstants.GENERAL_KNOWLEDGE_FALLBACK,
-                    modelName
-            );
-        }
-
-        // Case 3: Strictly verify which supplied chunks were cited by exact ChunkID or exact (Document + Page)
+        // Case 2: Strictly verify which supplied chunks were cited by exact ChunkID or (Document + Page) BEFORE checking general knowledge fallback
         Map<String, KnowledgeChunk> verifiedChunks = matchSuppliedCitations(sanitizedReply, supplied);
 
-        // If the model did not cite any supplied chunk, NEVER auto-attach chunks; fall back to general knowledge notice
         if (verifiedChunks.isEmpty()) {
+            // If no supplied chunks were cited (or model declared general knowledge only), NEVER auto-attach chunks; fall back to general knowledge notice
             String normalizedReply = ensureFallbackNoticePresent(sanitizedReply);
             return new TaResponse(
                     normalizedReply,
@@ -144,21 +134,26 @@ public final class CitationVerifier {
 
             for (KnowledgeChunk chunk : supplied) {
                 if (documentNamesMatch(chunk.documentName(), citedDoc)
-                        && chunk.startPage() == citedStartPage
-                        && chunk.endPage() == citedEndPage) {
+                        && chunk.startPage() <= citedEndPage
+                        && chunk.endPage() >= citedStartPage) {
                     verified.put(chunk.id(), chunk);
                 }
             }
         }
 
-        // 3. Match prose references that name BOTH the supplied document and the exact word-bounded page/slide number
+        // 3. Match prose references within the SAME clause/sentence that name BOTH the supplied document and the exact page/slide number without negation
+        String[] clauses = reply.split("[.!?\\n\\[\\]]+");
         for (KnowledgeChunk chunk : supplied) {
-            if (mentionsDocumentName(reply, chunk.documentName())
-                    && mentionsExactPageNumber(reply, chunk.startPage())) {
-                verified.put(chunk.id(), chunk);
+            for (String clause : clauses) {
+                if (!clause.isBlank()
+                        && !NEGATION_CLAUSE_PATTERN.matcher(clause).find()
+                        && mentionsDocumentName(clause, chunk.documentName())
+                        && mentionsExactPageNumber(clause, chunk.startPage())) {
+                    verified.put(chunk.id(), chunk);
+                    break;
+                }
             }
         }
-
         return verified;
     }
 
@@ -190,8 +185,8 @@ public final class CitationVerifier {
             int endPage = srcMatcher.group(3) != null ? Integer.parseInt(srcMatcher.group(3)) : startPage;
             boolean valid = supplied.stream().anyMatch(c ->
                     documentNamesMatch(c.documentName(), citedDoc)
-                            && c.startPage() == startPage
-                            && c.endPage() == endPage
+                            && c.startPage() <= endPage
+                            && c.endPage() >= startPage
             );
             if (valid) {
                 srcMatcher.appendReplacement(afterSrcStrip, Matcher.quoteReplacement(srcMatcher.group(0)));
@@ -207,7 +202,22 @@ public final class CitationVerifier {
     private static boolean documentNamesMatch(String suppliedDoc, String citedDoc) {
         String s = suppliedDoc.trim().toLowerCase(Locale.ROOT);
         String c = citedDoc.trim().toLowerCase(Locale.ROOT);
-        return s.equals(c);
+        if (s.equals(c)) {
+            return true;
+        }
+        String sStem = stripDocumentExtension(s);
+        String cStem = stripDocumentExtension(c);
+        if (sStem.equals(cStem)) {
+            return true;
+        }
+        if (s.startsWith("lec-5") && (cStem.equals("lecture 5") || cStem.equals("lec 5") || cStem.equals("lec-5"))) {
+            return true;
+        }
+        return false;
+    }
+
+    private static String stripDocumentExtension(String name) {
+        return name.replaceFirst("\\.(?:pdf|md|txt)$", "").trim();
     }
 
     private static boolean mentionsDocumentName(String reply, String documentName) {

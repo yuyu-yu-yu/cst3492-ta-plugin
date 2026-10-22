@@ -90,4 +90,56 @@ class TaChatSessionTest {
         assertTrue(response.answer().contains("HTTP 401 Unauthorized"));
         assertTrue(response.modelUsed().contains("Error"));
     }
+
+    @Test
+    void verifiesMultiTurnCumulativeSessionChunksAndAvoidsNonFollowUpQueryPollutionAndCapsHistoryLength() {
+        // 1. Multi-turn cumulative citation verification + coreference-only follow-up retrieval
+        final java.util.List<String> capturedUserPrompts = new java.util.ArrayList<>();
+        TaChatSession session = new TaChatSession(knowledgeBase, new edu.tongji.cst3492.ta.llm.ModelClient() {
+            private int callCount = 0;
+
+            @Override
+            public String complete(java.util.List<edu.tongji.cst3492.ta.llm.ChatMessage> messages) {
+                callCount++;
+                capturedUserPrompts.add(messages.get(messages.size() - 1).content());
+                if (callCount == 1) {
+                    return "RAG has four steps [Source: Lec-5-Building-AI-Powered-Java-Applications.pdf, Page 23].";
+                } else if (callCount == 2) {
+                    // Turn 2 asks "What is JPA?" (not a follow-up to RAG, no chunks retrieved),
+                    // but if the model re-cites Turn 1's slide 23 in a comparison, cumulative session chunks verify it
+                    return "JPA is for ORM, unlike the RAG pipeline in [Source: Lec-5-Building-AI-Powered-Java-Applications.pdf, Page 23].";
+                }
+                return "A".repeat(2000) + " [Source: Lec-5-Building-AI-Powered-Java-Applications.pdf, Page 23]";
+            }
+
+            @Override
+            public String providerName() {
+                return "MockMultiTurnClient";
+            }
+        }, 1800);
+
+        long genBefore = session.currentGeneration();
+        TaResponse turn1 = session.ask("What are the four steps of RAG in Lecture 5?", EditorCodeContext.empty());
+        assertTrue(turn1.basedOnCourseMaterial());
+
+        // Turn 2: standalone technical question "What is JPA?" (< 32 chars) must NOT append Turn 1's RAG question
+        TaResponse turn2 = session.ask("What is JPA?", EditorCodeContext.empty());
+        assertTrue(
+                capturedUserPrompts.get(1).contains("NONE (No matching course slides or notes met the relevance threshold"),
+                "'What is JPA?' must not inherit previous RAG question for retrieval"
+        );
+        assertTrue(turn2.basedOnCourseMaterial(), "Turn 2 re-citing Turn 1's slide must be verified via sessionSuppliedChunks");
+        assertFalse(turn2.answer().contains("[Unverified Source removed]"));
+
+        // Turn 3: oversized response must be truncated so totalHistoryChars() <= maxHistoryChars
+        session.ask("Can you elaborate on that?", EditorCodeContext.empty());
+        assertTrue(session.totalHistoryChars() <= 1800, "totalHistoryChars() must never exceed maxHistoryChars after trimHistory()");
+        assertTrue(
+                session.history().get(session.history().size() - 1).content().endsWith("... [truncated]"),
+                "Oversized assistant message in history must be truncated with '... [truncated]'"
+        );
+
+        session.resetSession();
+        assertTrue(session.currentGeneration() > genBefore, "resetSession() must increment currentGeneration()");
+    }
 }

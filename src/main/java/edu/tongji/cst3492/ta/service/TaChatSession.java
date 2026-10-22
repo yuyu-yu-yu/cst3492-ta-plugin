@@ -13,6 +13,9 @@ import edu.tongji.cst3492.ta.rag.ScoredChunk;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.regex.Pattern;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -29,6 +32,19 @@ public final class TaChatSession {
     public static final int DEFAULT_MAX_HISTORY_CHARS = 4000;
     public static final int DEFAULT_TOP_K = 3;
 
+    private static final Pattern FOLLOW_UP_MARKER_PATTERN = Pattern.compile(
+            "\\b(?:it|this|that|these|those|they|them|its|their|more|detail|details|elaborate|further|again|previous|above|why|example|examples)\\b"
+                    + "|(?:展开|详细|继续|上面|刚才|为什么|它|这个|那个)",
+            Pattern.CASE_INSENSITIVE
+    );
+
+    private static final Pattern STANDALONE_TECH_NOUN_PATTERN = Pattern.compile(
+            "\\b(?:jpa|hibernate|spring|maven|gradle|docker|kubernetes|redis|kafka|mysql|postgres|sql|hashmap|treemap|arraylist|linkedlist|rag|bm25|rrf|llm|json|junit|servlet|jdbc|jvm|gc|thread|mutex|semaphore|deadlock|microservice|rest|graphql|tcp|http|https|oauth|jwt)\\b"
+                    + "|[A-Z][a-z]+[A-Z][A-Za-z0-9]*",
+            Pattern.CASE_INSENSITIVE
+    );
+
+    private final Map<String, ScoredChunk> sessionSuppliedChunks = new LinkedHashMap<>();
     private final CourseKnowledgeBase knowledgeBase;
     private final List<ChatMessage> history = new ArrayList<>();
     private final int maxHistoryChars;
@@ -60,7 +76,12 @@ public final class TaChatSession {
         sessionGeneration.incrementAndGet();
         history.clear();
         history.add(ChatMessage.system(TaPromptBuilder.SYSTEM_PROMPT));
+        sessionSuppliedChunks.clear();
         droppedMessagesCount = 0;
+    }
+
+    public long currentGeneration() {
+        return sessionGeneration.get();
     }
 
     public TaResponse ask(String userQuestion, EditorCodeContext codeContext) {
@@ -83,11 +104,21 @@ public final class TaChatSession {
                 retrievedChunks
         );
 
+        List<ScoredChunk> verificationChunks = new ArrayList<>(retrievedChunks);
         synchronized (this) {
+            for (ScoredChunk sc : sessionSuppliedChunks.values()) {
+                boolean alreadyInCurrent = retrievedChunks.stream()
+                        .anyMatch(curr -> curr.chunk().id().equals(sc.chunk().id()));
+                if (!alreadyInCurrent) {
+                    verificationChunks.add(sc);
+                }
+            }
+            for (ScoredChunk sc : retrievedChunks) {
+                sessionSuppliedChunks.put(sc.chunk().id(), sc);
+            }
             requestMessages = new ArrayList<>(history);
             requestMessages.add(ChatMessage.user(augmentedCurrentTurnMessage));
         }
-
         // Execute LLM call OUTSIDE the synchronized lock so resetSession() on EDT never blocks
         String rawReply;
         String modelUsed = client.providerName();
@@ -107,13 +138,14 @@ public final class TaChatSession {
             );
         }
 
-        TaResponse verified = CitationVerifier.verifyAndFormat(rawReply, retrievedChunks, modelUsed);
+        TaResponse verified = CitationVerifier.verifyAndFormat(rawReply, verificationChunks, modelUsed);
 
         // Record compact user question + verified answer into history only if session was not reset mid-flight
         synchronized (this) {
             if (sessionGeneration.get() == genAtStart) {
-                history.add(ChatMessage.user(formatCompactHistoryUserEntry(userQuestion, codeContext)));
-                history.add(ChatMessage.assistant(verified.answer()));
+                int maxSingleMessageChars = maxHistoryChars / 2;
+                history.add(ChatMessage.user(truncateForHistory(formatCompactHistoryUserEntry(userQuestion, codeContext), maxSingleMessageChars)));
+                history.add(ChatMessage.assistant(truncateForHistory(verified.answer(), maxSingleMessageChars)));
                 trimHistory();
             }
         }
@@ -128,6 +160,24 @@ public final class TaChatSession {
             }
             droppedMessagesCount += (nextUserIdx - 1);
             history.subList(1, nextUserIdx).clear();
+        }
+        if (totalHistoryChars() > maxHistoryChars && history.size() >= 3) {
+            int systemLen = history.get(0).content().length();
+            int remainingBudget = Math.max(0, maxHistoryChars - systemLen);
+            int userIdx = history.size() - 2;
+            int assistantIdx = history.size() - 1;
+            ChatMessage userMsg = history.get(userIdx);
+            ChatMessage assistantMsg = history.get(assistantIdx);
+            int userBudget = Math.min(userMsg.content().length(), remainingBudget / 2);
+            if (userMsg.content().length() > userBudget) {
+                userMsg = new ChatMessage(userMsg.role(), truncateForHistory(userMsg.content(), userBudget));
+                history.set(userIdx, userMsg);
+            }
+            int assistantBudget = Math.max(0, remainingBudget - userMsg.content().length());
+            if (assistantMsg.content().length() > assistantBudget) {
+                assistantMsg = new ChatMessage(assistantMsg.role(), truncateForHistory(assistantMsg.content(), assistantBudget));
+                history.set(assistantIdx, assistantMsg);
+            }
         }
     }
 
@@ -164,13 +214,28 @@ public final class TaChatSession {
         return q;
     }
 
+    private static String truncateForHistory(String content, int maxChars) {
+        if (content == null || maxChars <= 0) {
+            return "";
+        }
+        if (content.length() <= maxChars) {
+            return content;
+        }
+        String suffix = "... [truncated]";
+        if (maxChars <= suffix.length()) {
+            return content.substring(0, maxChars);
+        }
+        int cut = maxChars - suffix.length();
+        return content.substring(0, cut) + suffix;
+    }
+
     private String buildRetrievalQuery(String userQuestion, EditorCodeContext codeContext) {
         StringBuilder q = new StringBuilder();
         if (userQuestion != null) {
             q.append(userQuestion);
         }
-        // If follow-up question is very short (e.g. "explain in more detail"), include the previous user question for retrieval context
-        if (userQuestion != null && userQuestion.trim().length() < 32 && history.size() >= 3) {
+        // Include the previous user question only when the current question is a coreference/follow-up question
+        if (userQuestion != null && isFollowUpQuestion(userQuestion) && history.size() >= 3) {
             for (int i = history.size() - 1; i >= 1; i--) {
                 if (ChatMessage.USER.equals(history.get(i).role())) {
                     q.append(" ").append(history.get(i).content());
@@ -184,5 +249,17 @@ public final class TaChatSession {
                     .append(" ").append(codeContext.selectedCode());
         }
         return q.toString().trim();
+    }
+
+    static boolean isFollowUpQuestion(String userQuestion) {
+        if (userQuestion == null || userQuestion.isBlank()) {
+            return false;
+        }
+        String trimmed = userQuestion.trim();
+        if (FOLLOW_UP_MARKER_PATTERN.matcher(trimmed).find()) {
+            return true;
+        }
+        String[] words = trimmed.split("\\s+");
+        return words.length < 3 && !STANDALONE_TECH_NOUN_PATTERN.matcher(trimmed).find();
     }
 }

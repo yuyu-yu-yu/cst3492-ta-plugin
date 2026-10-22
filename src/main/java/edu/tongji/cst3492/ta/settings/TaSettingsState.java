@@ -1,5 +1,9 @@
 package edu.tongji.cst3492.ta.settings;
 
+import com.intellij.credentialStore.CredentialAttributes;
+import com.intellij.credentialStore.CredentialAttributesKt;
+import com.intellij.credentialStore.Credentials;
+import com.intellij.ide.passwordSafe.PasswordSafe;
 import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.PersistentStateComponent;
 import com.intellij.openapi.components.Service;
@@ -10,13 +14,15 @@ import com.intellij.util.xmlb.annotations.Transient;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Persistent application-level settings for the CST3492 TA plugin.
  * Follows Lecture 5 Slide 17 ("The key comes from DEEPSEEK_API_KEY. It never appears in code, slides or git"):
- * {@code apiKey} is marked {@link Transient} so it is never written in plain text to {@code Cst3492TaSettings.xml}.
+ * the API key is never written in plain text to {@code Cst3492TaSettings.xml}; it is stored in IntelliJ's
+ * {@link PasswordSafe} (OS keychain / KeePass) and cached in memory. Without an IntelliJ application
+ * (plain unit tests) the key lives only in memory.
  */
 @Service(Service.Level.APP)
 @State(
@@ -25,11 +31,17 @@ import java.util.List;
 )
 public final class TaSettingsState implements PersistentStateComponent<TaSettingsState> {
 
+    private static final String CREDENTIAL_SUBSYSTEM = "CST3492CourseTA";
+    private static final String CREDENTIAL_KEY = "LlmApiKey";
+    private static final String CREDENTIAL_USER = "cst3492-ta";
+
     public String apiBaseUrl = "https://api.deepseek.com/v1";
     public String modelName = "deepseek-chat";
     public int topKChunks = 3;
-    public boolean offlineDemoMode = false;
-    public List<String> importedDocumentPaths = new ArrayList<>();
+    /** Defaults to offline mode unless an API key is provided through the environment. */
+    public boolean offlineDemoMode = !hasEnvironmentApiKey();
+    /** Written from background indexing threads and read on the EDT, hence copy-on-write. */
+    public List<String> importedDocumentPaths = new CopyOnWriteArrayList<>();
 
     @Transient
     private volatile String sessionApiKey = "";
@@ -41,32 +53,69 @@ public final class TaSettingsState implements PersistentStateComponent<TaSetting
         return ApplicationManager.getApplication().getService(TaSettingsState.class);
     }
 
+    private static CredentialAttributes createCredentialAttributes() {
+        return new CredentialAttributes(
+                CredentialAttributesKt.generateServiceName(CREDENTIAL_SUBSYSTEM, CREDENTIAL_KEY)
+        );
+    }
+
+    private static boolean hasEnvironmentApiKey() {
+        return !readEnv("DEEPSEEK_API_KEY").isEmpty() || !readEnv("TONGJI_API_KEY").isEmpty();
+    }
+
+    private static String readEnv(String name) {
+        String value = System.getenv(name);
+        return value == null ? "" : value.trim();
+    }
+
     @Transient
     public String getSessionApiKey() {
-        return sessionApiKey == null ? "" : sessionApiKey;
+        String cached = sessionApiKey;
+        if (cached != null && !cached.isBlank()) {
+            return cached;
+        }
+        if (ApplicationManager.getApplication() != null) {
+            try {
+                String stored = PasswordSafe.getInstance().getPassword(createCredentialAttributes());
+                if (stored != null && !stored.isBlank()) {
+                    sessionApiKey = stored.trim();
+                    return sessionApiKey;
+                }
+            } catch (Exception ignored) {
+                // Credential store unavailable (e.g. locked keychain): fall back to in-memory/env key.
+            }
+        }
+        return "";
     }
 
     @Transient
     public void setSessionApiKey(String key) {
         this.sessionApiKey = key == null ? "" : key.trim();
+        if (ApplicationManager.getApplication() != null) {
+            try {
+                PasswordSafe.getInstance().set(
+                        createCredentialAttributes(),
+                        new Credentials(CREDENTIAL_USER, this.sessionApiKey)
+                );
+            } catch (Exception ignored) {
+                // Credential store unavailable: key stays in memory for this IDE session only.
+            }
+        }
     }
 
     public String resolveApiKey() {
         if (offlineDemoMode) {
             return "";
         }
-        if (sessionApiKey != null && !sessionApiKey.isBlank()) {
-            return sessionApiKey.trim();
+        String sessionKey = getSessionApiKey();
+        if (!sessionKey.isBlank()) {
+            return sessionKey;
         }
-        String envDeepSeek = System.getenv("DEEPSEEK_API_KEY");
-        if (envDeepSeek != null && !envDeepSeek.isBlank()) {
-            return envDeepSeek.trim();
+        String envDeepSeek = readEnv("DEEPSEEK_API_KEY");
+        if (!envDeepSeek.isEmpty()) {
+            return envDeepSeek;
         }
-        String envTongji = System.getenv("TONGJI_API_KEY");
-        if (envTongji != null && !envTongji.isBlank()) {
-            return envTongji.trim();
-        }
-        return "";
+        return readEnv("TONGJI_API_KEY");
     }
 
     @Override
@@ -77,5 +126,10 @@ public final class TaSettingsState implements PersistentStateComponent<TaSetting
     @Override
     public void loadState(@NotNull TaSettingsState state) {
         XmlSerializerUtil.copyBean(state, this);
+        // The deserializer may hand back a plain ArrayList; restore the thread-safe list.
+        List<String> loaded = importedDocumentPaths;
+        importedDocumentPaths = loaded == null
+                ? new CopyOnWriteArrayList<>()
+                : new CopyOnWriteArrayList<>(loaded);
     }
 }
