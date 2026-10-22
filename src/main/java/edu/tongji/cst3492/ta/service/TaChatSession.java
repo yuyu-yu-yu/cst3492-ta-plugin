@@ -1,5 +1,6 @@
 package edu.tongji.cst3492.ta.service;
 
+import edu.tongji.cst3492.ta.PluginConstants;
 import edu.tongji.cst3492.ta.llm.ChatMessage;
 import edu.tongji.cst3492.ta.llm.CitationVerifier;
 import edu.tongji.cst3492.ta.llm.EditorCodeContext;
@@ -12,23 +13,26 @@ import edu.tongji.cst3492.ta.rag.ScoredChunk;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Coordinates the multi-turn RAG conversation session between the student and the Course TA.
- * Implements bounded history management ({@link #trimHistory()}) as taught in Lecture 5 (Slide 35-36):
- * - Keeps the system prompt at index 0
- * - Drops the oldest user/assistant exchange first when character count exceeds {@code maxHistoryChars}
- * - Verifies every response via {@link CitationVerifier}
+ * Fixes multi-turn memory and EDT concurrency:
+ * - Stores ONLY compact user questions (and code context header) in {@code history}; retrieved RAG chunks
+ *   are injected into the ephemeral request payload for the current turn only so multi-turn memory is preserved.
+ * - Executes {@link ModelClient#complete(List)} OUTSIDE the {@code synchronized} lock and uses a session
+ *   generation counter so clicking "New Session" on the EDT never blocks and discards stale in-flight replies.
+ * - Surfaces online LLM errors explicitly instead of silently masking them with offline template text.
  */
 public final class TaChatSession {
 
-    public static final int DEFAULT_MAX_HISTORY_CHARS = 6000;
+    public static final int DEFAULT_MAX_HISTORY_CHARS = 4000;
     public static final int DEFAULT_TOP_K = 3;
 
     private final CourseKnowledgeBase knowledgeBase;
     private final List<ChatMessage> history = new ArrayList<>();
     private final int maxHistoryChars;
-    private final OfflineCourseTaClient offlineFallback = new OfflineCourseTaClient();
+    private final AtomicLong sessionGeneration = new AtomicLong(0);
     private volatile ModelClient primaryClient;
     private volatile int topK = DEFAULT_TOP_K;
     private int droppedMessagesCount = 0;
@@ -39,57 +43,85 @@ public final class TaChatSession {
 
     public TaChatSession(CourseKnowledgeBase knowledgeBase, ModelClient primaryClient, int maxHistoryChars) {
         this.knowledgeBase = knowledgeBase;
-        this.primaryClient = primaryClient != null ? primaryClient : offlineFallback;
-        this.maxHistoryChars = Math.max(1000, maxHistoryChars);
+        this.primaryClient = primaryClient != null ? primaryClient : new OfflineCourseTaClient();
+        this.maxHistoryChars = Math.max(600, maxHistoryChars);
         resetSession();
     }
 
-    public synchronized void setPrimaryClient(ModelClient client) {
-        this.primaryClient = client != null ? client : offlineFallback;
+    public void setPrimaryClient(ModelClient client) {
+        this.primaryClient = client != null ? client : new OfflineCourseTaClient();
     }
 
-    public synchronized void setTopK(int topK) {
+    public void setTopK(int topK) {
         this.topK = Math.max(1, Math.min(8, topK));
     }
 
     public synchronized void resetSession() {
+        sessionGeneration.incrementAndGet();
         history.clear();
         history.add(ChatMessage.system(TaPromptBuilder.SYSTEM_PROMPT));
         droppedMessagesCount = 0;
     }
 
-    public synchronized TaResponse ask(String userQuestion, EditorCodeContext codeContext) {
-        String retrievalQuery = buildRetrievalQuery(userQuestion, codeContext);
-        List<ScoredChunk> retrievedChunks = knowledgeBase.retrieve(retrievalQuery, topK);
+    public TaResponse ask(String userQuestion, EditorCodeContext codeContext) {
+        int currentTopK = this.topK;
+        ModelClient client = this.primaryClient;
 
-        String augmentedUserMessage = TaPromptBuilder.buildAugmentedUserMessage(
+        List<ChatMessage> requestMessages;
+        String retrievalQuery;
+        long genAtStart;
+
+        synchronized (this) {
+            genAtStart = sessionGeneration.get();
+            retrievalQuery = buildRetrievalQuery(userQuestion, codeContext);
+        }
+
+        List<ScoredChunk> retrievedChunks = knowledgeBase.retrieve(retrievalQuery, currentTopK);
+        String augmentedCurrentTurnMessage = TaPromptBuilder.buildAugmentedUserMessage(
                 userQuestion,
                 codeContext,
                 retrievedChunks
         );
 
-        history.add(ChatMessage.user(augmentedUserMessage));
-        trimHistory();
+        synchronized (this) {
+            requestMessages = new ArrayList<>(history);
+            requestMessages.add(ChatMessage.user(augmentedCurrentTurnMessage));
+        }
 
+        // Execute LLM call OUTSIDE the synchronized lock so resetSession() on EDT never blocks
         String rawReply;
-        String modelUsed;
+        String modelUsed = client.providerName();
         try {
-            rawReply = primaryClient.complete(List.copyOf(history));
-            modelUsed = primaryClient.providerName();
+            rawReply = client.complete(List.copyOf(requestMessages));
         } catch (Exception ex) {
-            rawReply = offlineFallback.complete(List.copyOf(history));
-            modelUsed = offlineFallback.providerName() + " [Fallback after error: " + ex.getMessage() + "]";
+            String errorMsg = "**LLM Service Request Failed (`" + modelUsed + "`)**\n\n"
+                    + "- **Error:** `" + ex.getMessage() + "`\n"
+                    + "- **Action:** Please check your API Key and Base URL in **LLM Settings**, or switch the provider preset to **Built-in Offline Course TA** for offline demonstration.\n\n---\n"
+                    + "Note: " + PluginConstants.GENERAL_KNOWLEDGE_FALLBACK;
+            return new TaResponse(
+                    errorMsg,
+                    List.of(),
+                    false,
+                    PluginConstants.GENERAL_KNOWLEDGE_FALLBACK,
+                    modelUsed + " (Error)"
+            );
         }
 
         TaResponse verified = CitationVerifier.verifyAndFormat(rawReply, retrievedChunks, modelUsed);
-        history.add(ChatMessage.assistant(verified.answer()));
-        trimHistory();
+
+        // Record compact user question + verified answer into history only if session was not reset mid-flight
+        synchronized (this) {
+            if (sessionGeneration.get() == genAtStart) {
+                history.add(ChatMessage.user(formatCompactHistoryUserEntry(userQuestion, codeContext)));
+                history.add(ChatMessage.assistant(verified.answer()));
+                trimHistory();
+            }
+        }
         return verified;
     }
 
-    void trimHistory() {
+    synchronized void trimHistory() {
         while (totalHistoryChars() > maxHistoryChars && history.size() > 3) {
-            // Keep index 0 (system prompt) and drop the oldest user+assistant exchange starting at index 1
             int nextUserIdx = findNextUserMessageIndex(2);
             if (nextUserIdx <= 1 || nextUserIdx >= history.size() - 1) {
                 break;
@@ -124,10 +156,27 @@ public final class TaChatSession {
         return droppedMessagesCount;
     }
 
-    private static String buildRetrievalQuery(String userQuestion, EditorCodeContext codeContext) {
+    private static String formatCompactHistoryUserEntry(String userQuestion, EditorCodeContext codeContext) {
+        String q = userQuestion == null ? "" : userQuestion.trim();
+        if (codeContext != null && codeContext.hasSelection()) {
+            return "[Code Context: " + codeContext.formatSummary() + "] " + q;
+        }
+        return q;
+    }
+
+    private String buildRetrievalQuery(String userQuestion, EditorCodeContext codeContext) {
         StringBuilder q = new StringBuilder();
         if (userQuestion != null) {
             q.append(userQuestion);
+        }
+        // If follow-up question is very short (e.g. "explain in more detail"), include the previous user question for retrieval context
+        if (userQuestion != null && userQuestion.trim().length() < 32 && history.size() >= 3) {
+            for (int i = history.size() - 1; i >= 1; i--) {
+                if (ChatMessage.USER.equals(history.get(i).role())) {
+                    q.append(" ").append(history.get(i).content());
+                    break;
+                }
+            }
         }
         if (codeContext != null && codeContext.hasSelection()) {
             q.append(" ").append(codeContext.className())

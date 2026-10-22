@@ -1,5 +1,6 @@
 package edu.tongji.cst3492.ta.service;
 
+import com.intellij.openapi.application.ApplicationManager;
 import com.intellij.openapi.components.Service;
 import com.intellij.openapi.project.Project;
 import edu.tongji.cst3492.ta.llm.EditorCodeContext;
@@ -10,12 +11,17 @@ import edu.tongji.cst3492.ta.llm.TaResponse;
 import edu.tongji.cst3492.ta.rag.CourseKnowledgeBase;
 import edu.tongji.cst3492.ta.settings.TaSettingsState;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 
 /**
  * Project-level IntelliJ service that manages the {@link CourseKnowledgeBase}, {@link TaChatSession},
  * and active {@link EditorCodeContext} for the CST3492 Course TA plugin.
+ * Loads course PDFs asynchronously on a background thread so opening the Tool Window never blocks the EDT.
  */
 @Service(Service.Level.PROJECT)
 public final class TaProjectService {
@@ -23,17 +29,51 @@ public final class TaProjectService {
     private final Project project;
     private final CourseKnowledgeBase knowledgeBase;
     private final TaChatSession chatSession;
+    private final CountDownLatch initialIndexLatch = new CountDownLatch(1);
     private volatile EditorCodeContext pendingCodeContext = EditorCodeContext.empty();
     private volatile Consumer<EditorCodeContext> contextSelectionListener;
+    private volatile Runnable indexUpdateListener;
 
     public TaProjectService(Project project) {
         this.project = project;
         this.knowledgeBase = new CourseKnowledgeBase();
-        this.knowledgeBase.loadBundledCourseMaterials();
-        if (project != null && project.getBasePath() != null) {
-            this.knowledgeBase.scanDirectoryForCoursePdfs(Path.of(project.getBasePath()));
-        }
         this.chatSession = new TaChatSession(knowledgeBase, createModelClientFromSettings());
+        initializeKnowledgeBaseAsync();
+    }
+
+    private void initializeKnowledgeBaseAsync() {
+        Runnable loadTask = () -> {
+            try {
+                knowledgeBase.loadBundledCourseMaterials();
+                if (project != null && project.getBasePath() != null) {
+                    knowledgeBase.scanDirectoryForCoursePdfs(Path.of(project.getBasePath()));
+                }
+                TaSettingsState settings = TaSettingsState.getInstance();
+                if (settings.importedDocumentPaths != null) {
+                    for (String pathStr : List.copyOf(settings.importedDocumentPaths)) {
+                        try {
+                            Path p = Path.of(pathStr);
+                            if (Files.isRegularFile(p)) {
+                                knowledgeBase.indexFile(p);
+                            }
+                        } catch (Exception ignored) {
+                        }
+                    }
+                }
+            } finally {
+                initialIndexLatch.countDown();
+                Runnable listener = this.indexUpdateListener;
+                if (listener != null) {
+                    listener.run();
+                }
+            }
+        };
+
+        if (ApplicationManager.getApplication() != null) {
+            ApplicationManager.getApplication().executeOnPooledThread(loadTask);
+        } else {
+            loadTask.run();
+        }
     }
 
     public static TaProjectService getInstance(Project project) {
@@ -47,6 +87,11 @@ public final class TaProjectService {
     }
 
     public TaResponse askQuestion(String question, EditorCodeContext codeContext) {
+        try {
+            initialIndexLatch.await(10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
         refreshClientFromSettings();
         return chatSession.ask(question, codeContext);
     }
@@ -79,8 +124,15 @@ public final class TaProjectService {
         this.contextSelectionListener = listener;
     }
 
+    public void setIndexUpdateListener(Runnable listener) {
+        this.indexUpdateListener = listener;
+    }
+
     private static ModelClient createModelClientFromSettings() {
         TaSettingsState settings = TaSettingsState.getInstance();
+        if (settings.offlineDemoMode) {
+            return new OfflineCourseTaClient();
+        }
         String apiKey = settings.resolveApiKey();
         if (apiKey != null && !apiKey.isBlank()) {
             return new OpenAiCompatibleModelClient(settings.apiBaseUrl, apiKey, settings.modelName);

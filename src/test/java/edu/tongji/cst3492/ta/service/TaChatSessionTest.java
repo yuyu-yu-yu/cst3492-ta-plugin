@@ -58,4 +58,36 @@ class TaChatSessionTest {
         assertEquals("system", session.history().get(0).role(), "System prompt must always remain at index 0");
         assertTrue(session.droppedMessagesCount() > 0, "Old exchanges should be trimmed once maxHistoryChars is exceeded");
     }
+
+    @Test
+    void storesCompactUserQuestionInHistoryInsteadOfFullRagChunks() {
+        TaChatSession session = new TaChatSession(knowledgeBase, new OfflineCourseTaClient());
+        session.ask("What are the four steps of RAG in Lecture 5?", EditorCodeContext.empty());
+        session.ask("How does Reciprocal Rank Fusion combine rankings?", EditorCodeContext.empty());
+
+        // History should retain system + Turn 1 (user+assistant) + Turn 2 (user+assistant) = 5 messages
+        assertEquals(5, session.history().size(), "Multi-turn history should retain earlier exchanges because RAG chunks are not persisted in history");
+        String storedUserTurn1 = session.history().get(1).content();
+        assertFalse(storedUserTurn1.contains("=== RETRIEVED COURSE MATERIALS"), "History user entry must not store bulky retrieved chunks");
+    }
+
+    @Test
+    void surfacesOnlineLlmFailureExplicitlyWithoutSilentOfflineTemplateMasking() {
+        TaChatSession session = new TaChatSession(knowledgeBase, new edu.tongji.cst3492.ta.llm.ModelClient() {
+            @Override
+            public String complete(java.util.List<edu.tongji.cst3492.ta.llm.ChatMessage> messages) {
+                throw new RuntimeException("HTTP 401 Unauthorized: Invalid API Key");
+            }
+
+            @Override
+            public String providerName() {
+                return "DeepSeek-Live";
+            }
+        });
+
+        TaResponse response = session.ask("What are the four steps of RAG?", EditorCodeContext.empty());
+        assertFalse(response.basedOnCourseMaterial(), "Failed online call must not pretend to be a verified course answer");
+        assertTrue(response.answer().contains("HTTP 401 Unauthorized"));
+        assertTrue(response.modelUsed().contains("Error"));
+    }
 }
